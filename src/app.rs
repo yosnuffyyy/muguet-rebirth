@@ -4,7 +4,9 @@
 use crate::{gpu, input, Runtime};
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
-use winit::dpi::{LogicalSize, PhysicalPosition};
+#[cfg(not(target_os = "ios"))]
+use winit::dpi::LogicalSize;
+use winit::dpi::PhysicalPosition;
 use winit::event::{DeviceEvent, DeviceId, ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{ModifiersState, PhysicalKey};
@@ -54,8 +56,12 @@ impl ApplicationHandler for App {
             return;
         }
         let attrs = Window::default_attributes()
-            .with_title(if self.args.iter().any(|a| a.starts_with("-wasmstartchoice")) || std::env::var("MUGUET_START").map(|v| v != "0").unwrap_or(false) { TITLE } else { PICK_TITLE })
-            .with_inner_size(LogicalSize::new(1280.0, 720.0));
+            .with_title(if self.args.iter().any(|a| a.starts_with("-wasmstartchoice")) || std::env::var("MUGUET_START").map(|v| v != "0").unwrap_or(false) { TITLE } else { PICK_TITLE });
+
+        // UIKit sizes the iPhone window to the screen. A desktop logical size
+        // becomes literal UIKit points and puts the launcher outside its bounds.
+        #[cfg(not(target_os = "ios"))]
+        let attrs = attrs.with_inner_size(LogicalSize::new(1280.0, 720.0));
 
         #[cfg(target_os = "ios")]
         let attrs = {
