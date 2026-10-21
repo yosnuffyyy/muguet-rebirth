@@ -19,7 +19,7 @@ pub fn record(enc: &mut CommandEncoder, src: &Texture, ss: (u32,u32), dst: &Text
     for (t, (m,l)) in [(src,ss),(dst,ds)] {
         ensure!(m < t.mip_level_count() && l < t.depth_or_array_layers(), "mip/layer {m}/{l} outside texture");
     }
-    let extent = |t: &Texture, m| ((t.width() >> m).max(1), (t.height() >> m).max(1));
+    let extent = |t: &Texture, m: u32| ((t.width() >> m).max(1), (t.height() >> m).max(1));
     let (w,h) = extent(src, ss.0);
     ensure!((w,h) == extent(dst, ds.0), "source/destination mip extents differ");
     ensure!(dst.sample_count() == 1, "destination must have one sample (got {})", dst.sample_count());
