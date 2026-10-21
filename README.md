@@ -1,3 +1,9 @@
+# Project Rebirth: customized Muguet fork
+
+**Read [REBIRTH.md](REBIRTH.md) for this fork's existing-folder workflow, launcher, build instructions, migration status and limitations. The original upstream documentation below describes the unmodified ZIP-based app. Do not use its installer for the customized Rebirth build.**
+
+---
+
 # Muguet
 A native Mach-O iOS/macOS port of GTA V, with multiplayer
 

@@ -10,6 +10,7 @@ pub struct Layout {
     pub data: PathBuf,
     pub shaders: PathBuf,
     pub wasm: PathBuf,
+    pub manifest: Vec<u8>,
 }
 fn child(root: &Path, relative: &str) -> Result<PathBuf> {
     ensure!(super::assets::valid_path(relative), "invalid relative path");
@@ -54,7 +55,12 @@ impl Layout {
             manifest.metadata()?.len() <= super::assets::MANIFEST_LIMIT as u64,
             "manifest exceeds limit"
         );
-        super::assets::Index::parse(&std::fs::read(&manifest)?)?;
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        std::fs::File::open(&manifest)?
+            .take(super::assets::MANIFEST_LIMIT as u64 + 1)
+            .read_to_end(&mut bytes)?;
+        super::assets::Index::parse(&bytes)?;
         // Pin to our original shader build; don't pick the first arbitrary b/ entry.
         let shaders = child(&root, &format!("b/{ORIGINAL_BUILD}/shaders"))?;
         let index = child(&root, &format!("b/{ORIGINAL_BUILD}/shaders/index.json"))?;
@@ -65,6 +71,7 @@ impl Layout {
             data,
             shaders,
             wasm,
+            manifest: bytes,
         })
     }
 }

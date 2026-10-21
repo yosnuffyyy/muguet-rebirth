@@ -173,3 +173,21 @@ fn physical_case_mapping_preserves_manifest_file_ids() {
     assert_eq!(r.opens, 1);
     assert_eq!(r.cache_hits, 1);
 }
+
+#[test]
+fn frozen_manifest_survives_provider_metadata_replacement() {
+    let f = Fixture::new();
+    fs::write(f.0.join("data/a"), b"original").unwrap();
+    fs::write(f.0.join("data/b"), b"wrong id").unwrap();
+    f.manifest(serde_json::json!([["a", 8, 0], ["b", 8, 0]]));
+    let frozen = fs::read(f.0.join("data/manifest.json")).unwrap();
+    f.manifest(serde_json::json!([["b", 8, 0], ["a", 8, 0]]));
+    let mut reader = Reader::open_frozen(&f.0.join("data"), Some(&frozen)).unwrap();
+    reader
+        .read(0, 0, 8, &AtomicBool::new(false), |b| {
+            assert_eq!(b, b"original");
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(reader.manifest_bytes(), frozen);
+}

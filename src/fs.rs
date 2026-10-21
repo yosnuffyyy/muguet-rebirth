@@ -81,13 +81,13 @@ fn host_path(fs: &Fs, guest: &str) -> PathBuf {
     fs.root.join(guest.trim_start_matches('/'))
 }
 
-fn write_stat(mem: &SharedMemory, buf: u64, md: &fs::Metadata, chr: bool) {
+fn write_stat(mem: &SharedMemory, buf: u64, md: &fs::Metadata, chr: bool) -> i64 {
     let mode = if chr { S_IFCHR | 0o666 } else if md.is_dir() { S_IFDIR | 0o777 } else { S_IFREG | 0o666 };
     let mut record = crate::rebirth::abi::Stat64::from_metadata(md);
     record.mode = mode;
     let mut b = [0u8; crate::rebirth::abi::STAT64_BYTES];
     record.write(&mut b).expect("fixed stat buffer");
-    write_bytes(mem, buf, &b);
+    if write_bytes(mem, buf, &b) {0} else {-EFAULT}
 }
 
 fn ok_i(results: &mut [Val], v: i64) {
@@ -173,7 +173,7 @@ pub fn handle(name: &str, mem: &SharedMemory, p: &[Val], results: &mut [Val]) ->
             let (dirfd, path, buf) = if name == "__syscall_newfstatat" { (a(0), a(1), a(2)) } else { (AT_FDCWD, a(0), a(1)) };
             match guest_abs(&fs, dirfd, &read_cstr(mem, path as u64)) {
                 Ok(g) => match fs::metadata(host_path(&fs, &g)) {
-                    Ok(md) => { write_stat(mem, buf as u64, &md, g.starts_with("/dev/")); 0 }
+                    Ok(md) => { write_stat(mem, buf as u64, &md, g.starts_with("/dev/")) }
                     Err(_) => -ENOENT,
                 },
                 Err(e) => -e,
@@ -183,11 +183,11 @@ pub fn handle(name: &str, mem: &SharedMemory, p: &[Val], results: &mut [Val]) ->
             let fd = a(0);
             if fd <= 2 {
                 let md = fs::metadata("/dev/null").unwrap();
-                write_stat(mem, a(1) as u64, &md, true); 0
+                write_stat(mem, a(1) as u64, &md, true)
             } else {
                 match fs.fds.get(&fd) {
-                    Some(Entry::File { file, .. }) => match file.metadata() { Ok(md) => { write_stat(mem, a(1) as u64, &md, false); 0 } Err(_) => -EBADF },
-                    Some(Entry::Dir { guest, .. }) => { let md = fs::metadata(host_path(&fs, guest)).unwrap(); write_stat(mem, a(1) as u64, &md, false); 0 }
+                    Some(Entry::File { file, .. }) => match file.metadata() { Ok(md) => { write_stat(mem, a(1) as u64, &md, false) } Err(_) => -EBADF },
+                    Some(Entry::Dir { guest, .. }) => { let md = fs::metadata(host_path(&fs, guest)).unwrap(); write_stat(mem, a(1) as u64, &md, false) }
                     None => -EBADF,
                 }
             }
@@ -336,6 +336,7 @@ pub fn handle(name: &str, mem: &SharedMemory, p: &[Val], results: &mut [Val]) ->
 
 pub fn httpfs_manifest(mem: &SharedMemory, p: &[Val], results: &mut [Val]) {
     static MANIFEST: LazyLock<Option<Vec<u8>>> = LazyLock::new(|| {
+        if let Some(launch)=crate::rebirth::current() {return Some(launch.layout.manifest.clone());}
         let dir = std::env::var("MUGUET_DATA").unwrap_or_default();
         fs::read(Path::new(&dir).join("manifest.json")).ok()
     });
@@ -356,6 +357,22 @@ pub fn httpfs_manifest(mem: &SharedMemory, p: &[Val], results: &mut [Val]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn original_stat64_preserves_canaries_and_rejects_short_memory() {
+        let mut config=wasmtime::Config::new();config.shared_memory(true);
+        let engine=wasmtime::Engine::new(&config).unwrap();
+        let mem=SharedMemory::new(&engine,wasmtime::MemoryType::shared(1,1)).unwrap();
+        let metadata=fs::metadata(std::env::temp_dir()).unwrap();
+        assert!(write_bytes(&mem,248,&[0xa5;128]));
+        assert_eq!(write_stat(&mem,256,&metadata,false),0);
+        assert_eq!(read_bytes(&mem,248,8),vec![0xa5;8]);
+        assert_eq!(read_bytes(&mem,360,16),vec![0xa5;16]);
+        let end=mem.data_size() as u64;
+        assert!(write_bytes(&mem,end-103,&[0xa5;103]));
+        assert_eq!(write_stat(&mem,end-103,&metadata,false),-EFAULT);
+        assert_eq!(read_bytes(&mem,end-103,103),vec![0xa5;103]);
+    }
 
     #[test]
     fn statfs_reports_real_available_space_in_guest_layout() {

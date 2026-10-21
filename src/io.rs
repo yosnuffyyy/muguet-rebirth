@@ -37,7 +37,7 @@ fn serve_loop(mem: SharedMemory, table: u64) {
     if table==0 || table%4!=0 || table.checked_add(64).is_none_or(|end|end>memory_bytes as u64) {
         crate::host::report_fatal("invalid asset request table header".into());return;
     }
-    let mut reader = match crate::rebirth::assets::Reader::open_data(&data_dir()) {
+    let mut reader = match crate::rebirth::assets::Reader::open_frozen(&data_dir(), crate::rebirth::current().map(|l|l.layout.manifest.as_slice())) {
         Ok(r) => r,
         Err(e) => { crate::host::report_fatal(format!("asset reader: {e:#}")); return; }
     };
