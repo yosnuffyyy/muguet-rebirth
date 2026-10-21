@@ -12,10 +12,17 @@ pub struct Launch {
     pub settings: settings::Settings,
     pub layout: layout::Layout,
     pub saves: PathBuf,
+    pub cache: PathBuf,
 }
 static LAUNCH: OnceLock<Launch> = OnceLock::new();
 pub fn current() -> Option<&'static Launch> {
     LAUNCH.get()
+}
+// Pipeline recipes are writable application data, never part of selected assets.
+fn private_cache(support: &Path) -> Result<PathBuf> {
+    let path = support.join("RebirthCaches").join("1b4600b-v1").join(layout::ORIGINAL_BUILD);
+    std::fs::create_dir_all(&path)?;
+    Ok(path)
 }
 pub fn prepare(root: &Path, json: &[u8], support: &Path) -> Result<()> {
     ensure!(
@@ -25,11 +32,13 @@ pub fn prepare(root: &Path, json: &[u8], support: &Path) -> Result<()> {
     let settings = settings::Settings::parse(json)?;
     let layout = layout::Layout::open(root)?;
     let saves = saves::prepare(support, settings.mode)?;
+    let cache = private_cache(support)?;
     LAUNCH
         .set(Launch {
             settings,
             layout,
             saves,
+            cache,
         })
         .map_err(|_| anyhow::anyhow!("launch already frozen"))?;
     Ok(())
@@ -136,5 +145,26 @@ mod ffi {
             .unwrap()
             .as_ref()
             .map_or(std::ptr::null(), |e| e.as_ptr())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn private_recipes_do_not_modify_selected_assets() {
+        let root = std::env::temp_dir().join(format!("rebirth-cache-{}", std::process::id()));
+        let support = root.join("support");
+        let assets = root.join("web/b").join(layout::ORIGINAL_BUILD).join("shaders");
+        std::fs::create_dir_all(&assets).unwrap();
+        std::fs::write(assets.join("index.json"), b"original").unwrap();
+        let cache = private_cache(&support).unwrap();
+        assert!(cache.starts_with(&support));
+        assert!(!cache.starts_with(root.join("web")));
+        std::fs::write(cache.join("pipelines-v1.jsonl"), b"recipe").unwrap();
+        assert_eq!(private_cache(&support).unwrap(), cache);
+        assert_eq!(std::fs::read(assets.join("index.json")).unwrap(), b"original");
+        assert!(!assets.parent().unwrap().join("pipelines-v1.jsonl").exists());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

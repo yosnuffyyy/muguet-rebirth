@@ -2759,6 +2759,7 @@ impl Gpu {
     }
 
     fn recipe_path(&self) -> PathBuf {
+        if let Some(launch) = crate::rebirth::current() { return launch.cache.join("pipelines-v1.jsonl"); }
         self.shader_dir.parent().unwrap_or(&self.shader_dir).join("pipelines-v1.jsonl")
     }
 
