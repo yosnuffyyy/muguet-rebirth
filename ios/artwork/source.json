@@ -1,0 +1,18 @@
+{
+  "source": "User supplied Photo 1.jpg",
+  "sha256": "45ee3ae0d618e7e51c1ed5328fe77d4025f1572b27cbc107eacf89b3d4ad2385",
+  "bytes": 414411,
+  "operation": "Deterministic size conversion only; preserve original artwork and opaque background.",
+  "parts": [
+    "icon-0.base64",
+    "icon-1.base64",
+    "icon-2.base64",
+    "icon-3.base64",
+    "icon-4.base64",
+    "icon-5.base64",
+    "icon-6.base64",
+    "icon-7.base64",
+    "icon-8.base64",
+    "icon-9.base64"
+  ]
+}

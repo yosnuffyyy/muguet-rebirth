@@ -42,6 +42,7 @@ struct LauncherView:View {
     @State private var picker=false
     @State private var error:String?
     @State private var loaded=false
+    @State private var starting=false
     @ObservedObject private var folder=SelectedFolder.shared
     let play:()->Void
     private let gold=Color(red:0.97,green:0.76,blue:0.20)
@@ -58,11 +59,12 @@ struct LauncherView:View {
                     }.padding(22).frame(maxWidth:900,alignment:.leading)}
                 }
                 Divider()
-                HStack(spacing:16){VStack(alignment:.leading){Text(s.mode==1 ? "STORY MODE" : "SANDBOX MODE").font(.caption.bold());Text("\(s.preset) · \(s.resolution) · \(s.fps) FPS cap").font(.caption).foregroundStyle(.secondary)};Spacer();Button(action:start){Label("PLAY",systemImage:"play.fill").font(.headline).foregroundStyle(.black).padding(.horizontal,35).frame(minHeight:48).background(gold,in:RoundedRectangle(cornerRadius:10))}.buttonStyle(.plain).disabled(!loaded || folder.url==nil || !hasGameCode()).opacity(!loaded || folder.url==nil || !hasGameCode() ? 0.45:1)}.padding(.horizontal,22).padding(.vertical,12)
+                HStack(spacing:16){VStack(alignment:.leading){Text(s.mode==1 ? "STORY MODE" : "SANDBOX MODE").font(.caption.bold());Text("\(s.preset) · \(s.resolution) · \(s.fps) FPS cap").font(.caption).foregroundStyle(.secondary)};Spacer();Button(action:start){Label(starting ? "PREPARING" : "PLAY",systemImage:"play.fill").font(.headline).foregroundStyle(.black).padding(.horizontal,35).frame(minHeight:48).background(gold,in:RoundedRectangle(cornerRadius:10))}.buttonStyle(.plain).disabled(!loaded || folder.url==nil || !hasGameCode()).opacity(!loaded || folder.url==nil || !hasGameCode() ? 0.45:1)}.padding(.horizontal,22).padding(.vertical,12)
             }.background(Color(red:0.055,green:0.061,blue:0.068)).tint(gold).preferredColorScheme(.dark)
         }
         .onAppear{do{s=try RebirthStore.load();loaded=true}catch{self.error="Saved settings could not be read. Reset settings to recover."}}
         .onChange(of:s){value in guard loaded else{return};do{try RebirthStore.save(value)}catch{self.error=error.localizedDescription}}
+        .disabled(starting)
         .fileImporter(isPresented:$picker,allowedContentTypes:[.folder]){result in do{try folder.select(result.get());error=nil}catch{self.error=error.localizedDescription}}
     }
     @ViewBuilder private var navigation:some View {ForEach(LibraryPage.allCases,id:\.self){item in Button{page=item} label:{Label(item.rawValue,systemImage:item.icon).font(.subheadline.weight(page==item ? .semibold:.regular)).frame(maxWidth:.infinity,alignment:.leading).padding(11).background(page==item ? gold.opacity(0.13):.clear,in:RoundedRectangle(cornerRadius:8))}.buttonStyle(.plain).foregroundStyle(page==item ? gold:Color.white.opacity(0.75))}}
@@ -109,9 +111,13 @@ struct LauncherView:View {
             let json=String(decoding:try JSONEncoder().encode(s),as:UTF8.self)
             let support=FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0]
             try FileManager.default.createDirectory(at:support,withIntermediateDirectories:true)
-            let ok=root.path.withCString{r in json.withCString{j in support.path.withCString{p in prepareLaunch(r,j,p)}}}
-            guard ok else{error=launchError().map{String(cString:$0)} ?? "Launch validation failed";return}
-            play()
+            starting=true
+            let rootPath=root.path,supportPath=support.path
+            DispatchQueue.global(qos:.userInitiated).async {
+                let ok=rootPath.withCString{r in json.withCString{j in supportPath.withCString{p in prepareLaunch(r,j,p)}}}
+                let message=ok ? nil : (launchError().map{String(cString:$0)} ?? "Launch validation failed")
+                DispatchQueue.main.async {starting=false;if ok{play()}else{error=message}}
+            }
         }catch{self.error=error.localizedDescription}
     }
 }

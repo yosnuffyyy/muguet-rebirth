@@ -6,14 +6,14 @@ const LIMIT: u64 = 256 * 1024 * 1024;
 const FILES: usize = 10_000;
 const MARKER: &str = ".rebirth-migration-v1";
 
-fn inventory(root: &Path, at: &Path, out: &mut Vec<(PathBuf,u64)>, total: &mut u64) -> Result<()> {
-    ensure!(out.len() < FILES, "save migration exceeds file bound");
+fn inventory(root: &Path, at: &Path, out: &mut Vec<(PathBuf,u64)>, total: &mut u64, nodes:&mut usize, depth:usize) -> Result<()> {
+    ensure!(out.len() < FILES && depth <= 32, "save migration exceeds file bound");
     for item in fs::read_dir(at)? {
-        let item = item?;
+        let item = item?;*nodes+=1;ensure!(*nodes<=FILES,"save tree exceeds entry bound");
         let path = item.path();
         let md = fs::symlink_metadata(&path)?;
         ensure!(!md.file_type().is_symlink(), "save symlinks are not migrated");
-        if md.is_dir() { inventory(root,&path,out,total)?; }
+        if md.is_dir() { inventory(root,&path,out,total,nodes,depth+1)?; }
         else {
             ensure!(md.is_file(), "save source is not a regular file");
             *total = total.checked_add(md.len()).context("save size overflow")?;
@@ -26,7 +26,12 @@ fn inventory(root: &Path, at: &Path, out: &mut Vec<(PathBuf,u64)>, total: &mut u
 
 fn copy_verified(from: &Path, to: &Path, length:u64) -> Result<()> {
     if let Some(parent)=to.parent() { fs::create_dir_all(parent)?; }
-    let mut source=fs::File::open(from)?;
+    let open_source=||->std::io::Result<fs::File> {
+        let mut options=fs::OpenOptions::new();options.read(true);
+        #[cfg(unix)] {use std::os::unix::fs::OpenOptionsExt;options.custom_flags(libc::O_NOFOLLOW|libc::O_CLOEXEC);}
+        options.open(from)
+    };
+    let mut source=open_source()?;
     ensure!(source.metadata()?.len()==length,"save changed during migration");
     let mut dest=fs::OpenOptions::new().write(true).create_new(true).open(to)?;
     let mut chunk=[0u8;64*1024];
@@ -35,7 +40,7 @@ fn copy_verified(from: &Path, to: &Path, length:u64) -> Result<()> {
         ensure!(copied<=length,"save grew during migration");dest.write_all(&chunk[..n])?;
     }
     ensure!(copied==length,"save shrank during migration");dest.sync_all()?;drop(dest);
-    let mut source=fs::File::open(from)?;let mut dest=fs::File::open(to)?;
+    let mut source=open_source()?;let mut dest=fs::File::open(to)?;
     let mut verify=[0u8;64*1024];let mut left=length;
     while left>0 {let n=left.min(chunk.len() as u64) as usize;source.read_exact(&mut chunk[..n])?;dest.read_exact(&mut verify[..n])?;
         ensure!(chunk[..n]==verify[..n],"save copy verification failed");left-=n as u64;}
@@ -60,7 +65,7 @@ pub fn prepare(support:&Path,mode:u32)->Result<PathBuf> {
     let mut files=Vec::new();let mut bytes=0;
     if source.exists() {
         ensure!(fs::symlink_metadata(&source)?.is_dir(),"legacy save root is not a directory");
-        inventory(&source,&source,&mut files,&mut bytes)?;
+        inventory(&source,&source,&mut files,&mut bytes,&mut 0,0)?;
         for (relative,len) in &files {copy_verified(&source.join(relative),&staging.join("userdata").join(relative),*len)?;}
     }
     let mut marker=fs::OpenOptions::new().write(true).create_new(true).open(staging.join(MARKER))?;

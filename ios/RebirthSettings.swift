@@ -12,6 +12,16 @@ struct RebirthSettings: Codable, Equatable {
     var mute = false
     var touch_sensitivity = 1.0, controller_sensitivity = 1.0
     var show_fps = true
+    func validate() throws {
+        func require(_ condition:Bool) throws {if !condition {throw CocoaError(.coderReadCorrupt)}}
+        try require(schema == 1 && [1,2].contains(mode) && Self.presets.contains(preset))
+        try require((320...2560).contains(width) && (180...1440).contains(height) && width > height && width%2 == 0 && height%2 == 0)
+        try require([50,60,70,80,90,100].contains(scale) && [15,20,30].contains(fps))
+        try require((width*scale+100)/200*2 >= 320 && (height*scale+100)/200*2 >= 180)
+        try require((0...2).contains(texture) && (-1...2).contains(shadow) && (0...3).contains(reflection) && (0...1).contains(water) && (0...2).contains(particles) && (0...3).contains(grass) && (0...3).contains(postfx) && (0...2).contains(ssao) && [0,2,4,8,16].contains(anisotropy))
+        try require(density.isFinite && (0...1).contains(density) && volume.isFinite && (0...1).contains(volume))
+        try require(touch_sensitivity.isFinite && (0.25...2).contains(touch_sensitivity) && controller_sensitivity.isFinite && (0.25...2).contains(controller_sensitivity))
+    }
     static let presets = ["Ultra Potato", "Potato", "Low", "Balanced", "Quality", "Custom"]
     var resolution: String { "\((width * scale + 100) / 200 * 2) × \((height * scale + 100) / 200 * 2)" }
     mutating func applyPreset(_ name: String) {
@@ -61,12 +71,12 @@ struct RebirthSettings: Codable, Equatable {
 enum RebirthStore {
     static let key="rebirth.settings.v1"
     static func load(_ defaults:UserDefaults = .standard) throws -> RebirthSettings {
-        if let data=defaults.data(forKey:key) {return try JSONDecoder().decode(RebirthSettings.self,from:data)}
+        if let data=defaults.data(forKey:key) {guard data.count <= 16384 else{throw CocoaError(.coderReadCorrupt)};let s=try JSONDecoder().decode(RebirthSettings.self,from:data);try s.validate();return s}
         if let legacy=defaults.dictionary(forKey:"launcherSettings.v1") {
             if defaults.object(forKey:"rebirth.legacySettings.backup.v1") == nil { defaults.set(legacy,forKey:"rebirth.legacySettings.backup.v1") }
             let s=RebirthSettings.migrateLegacy(legacy);try save(s,defaults);return s
         }
         return RebirthSettings()
     }
-    static func save(_ s:RebirthSettings,_ defaults:UserDefaults = .standard) throws {defaults.set(try JSONEncoder().encode(s),forKey:key)}
+    static func save(_ s:RebirthSettings,_ defaults:UserDefaults = .standard) throws {try s.validate();defaults.set(try JSONEncoder().encode(s),forKey:key)}
 }

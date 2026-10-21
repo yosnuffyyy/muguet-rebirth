@@ -21,13 +21,15 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: rebirth-integration-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+            target/release
+          key: rebirth-integration-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: rebirth-upstream-v1-${{ runner.os }}-${{ runner.arch }}-
       - name: Adapter and complete upstream host tests
         run: |
           set -o pipefail
           mkdir -p evidence/local
+          swiftc ios/RebirthSettings.swift tests/RebirthSettingsTests.swift -o evidence/local/settings-tests
+          evidence/local/settings-tests | tee evidence/local/swift-settings.log
           cargo +1.98.1 test --locked --manifest-path tools/Cargo.toml --release 2>&1 | tee evidence/local/adapters.log
           cargo +1.98.1 test --locked --release --bin muguet 2>&1 | tee evidence/local/upstream-tests.log
       - name: Original module and actual Muguet host initialization
@@ -45,6 +47,23 @@ jobs:
           if grep -E 'cranelift-codegen |wasmtime-internal-cranelift |wgpu-native|wasm2c' evidence/local/ios-dependencies.txt; then exit 1; fi
           xcrun dwarfdump --uuid target/aarch64-apple-ios/release/muguet > evidence/local/ios-uuid.txt
           xcrun otool -L target/aarch64-apple-ios/release/muguet > evidence/local/ios-libraries.txt
+      - name: Original iOS AOT module and privately delivered IPA
+        if: success()
+        run: |
+          set -o pipefail
+          python3 tools/run-bounded.py 600 target/release/muguet --precompile-ios evidence/local/original.wasm evidence/local/original-ios.cwasm 2>&1 | tee evidence/local/ios-aot.log
+          MUGUET_GAME_CODE="$PWD/evidence/local/original-ios.cwasm" IPHONEOS_DEPLOYMENT_TARGET=15.0 cargo +1.98.1 build --locked --release --no-default-features --target aarch64-apple-ios --bin muguet 2>&1 | tee evidence/local/ios-aot-link.log
+          xcrun nm target/aarch64-apple-ios/release/muguet | grep '_muguet_game_code' > evidence/local/aot-symbols.txt
+          xcrun otool -l target/aarch64-apple-ios/release/muguet > evidence/local/aot-segments.txt
+          xcrun otool -L target/aarch64-apple-ios/release/muguet > evidence/local/aot-libraries.txt
+          xcrun dwarfdump --uuid target/aarch64-apple-ios/release/muguet > evidence/local/aot-uuid.txt
+          python3 tools/package-ios.py target/aarch64-apple-ios/release/muguet
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: success()
+        with:
+          name: rebirth-private-ipa
+          path: build/rebirth-private.ipa.enc*
+          retention-days: 14
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:

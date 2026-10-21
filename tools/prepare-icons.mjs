@@ -1,0 +1,8 @@
+import fs from 'node:fs';import crypto from 'node:crypto';import {execFileSync} from 'node:child_process';import assert from 'node:assert/strict';
+const pin=JSON.parse(fs.readFileSync('ios/artwork/source.json')),bytes=Buffer.from(pin.parts.map(name=>fs.readFileSync('ios/artwork/'+name,'utf8').trim()).join(''),'base64');
+assert.equal(bytes.length,pin.bytes);assert.equal(crypto.createHash('sha256').update(bytes).digest('hex'),pin.sha256);
+const root='build/Rebirth.xcassets',set=root+'/AppIcon.appiconset';fs.mkdirSync(set,{recursive:true});fs.writeFileSync('build/icon-original.jpg',bytes);fs.writeFileSync(root+'/Contents.json',JSON.stringify({info:{author:'xcode',version:1}}));
+const images=[];for(const [idiom,size,scales] of [['iphone',20,[2,3]],['iphone',29,[2,3]],['iphone',40,[2,3]],['iphone',60,[2,3]],['ipad',20,[1,2]],['ipad',29,[1,2]],['ipad',40,[1,2]],['ipad',76,[1,2]],['ipad',83.5,[2]],['ios-marketing',1024,[1]]])for(const scale of scales){
+const pixels=size*scale,filename=`icon-${pixels}.png`;if(!fs.existsSync(set+'/'+filename))execFileSync('sips',['-s','format','png','-z',String(pixels),String(pixels),'build/icon-original.jpg','--out',set+'/'+filename]);
+const info=execFileSync('sips',['-g','pixelWidth','-g','pixelHeight','-g','hasAlpha',set+'/'+filename],{encoding:'utf8'});assert(info.includes('pixelWidth: '+pixels)&&info.includes('pixelHeight: '+pixels)&&info.includes('hasAlpha: no'));images.push({idiom,size:`${size}x${size}`,scale:`${scale}x`,filename});}
+fs.writeFileSync(set+'/Contents.json',JSON.stringify({images,info:{author:'xcode',version:1}},null,2)+'\n');fs.writeFileSync('evidence/local/icon-source.json',JSON.stringify({result:'PASS',...pin,images,opaque:true},null,2)+'\n');
