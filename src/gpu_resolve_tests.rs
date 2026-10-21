@@ -14,9 +14,9 @@ fn read(d:&Device,q:&Queue,t:&Texture,m:u32,l:u32)->Vec<u8> {
     let b=d.create_buffer(&BufferDescriptor{label:None,size:(pitch*h) as u64,usage:BufferUsages::COPY_DST|BufferUsages::MAP_READ,mapped_at_creation:false});
     let mut e=d.create_command_encoder(&Default::default());
     e.copy_texture_to_buffer(TexelCopyTextureInfo{texture:t,mip_level:m,origin:Origin3d{x:0,y:0,z:l},aspect:TextureAspect::All},TexelCopyBufferInfo{buffer:&b,layout:TexelCopyBufferLayout{offset:0,bytes_per_row:Some(pitch),rows_per_image:Some(h)}},Extent3d{width:w,height:h,depth_or_array_layers:1});
-    q.submit([e.finish()]);let(tx,rx)=std::sync::mpsc::channel();b.map_async(MapMode::Read,..,move |r|tx.send(r).unwrap());
+    q.submit([e.finish()]);let(tx,rx)=std::sync::mpsc::channel();b.slice(..).map_async(MapMode::Read,move |r|tx.send(r).unwrap());
     d.poll(PollType::Wait{submission_index:None,timeout:Some(std::time::Duration::from_secs(30))}).unwrap();rx.recv().unwrap().unwrap();
-    let data=b.get_mapped_range(..);let mut out=Vec::new();for y in 0..h {out.extend_from_slice(&data[(y*pitch)as usize..(y*pitch+w*4)as usize]);}drop(data);b.unmap();out
+    let data=b.slice(..).get_mapped_range().unwrap();let mut out=Vec::new();for y in 0..h {out.extend_from_slice(&data[(y*pitch)as usize..(y*pitch+w*4)as usize]);}drop(data);b.unmap();out
 }
 fn pipeline(d:&Device,code:&str,f:TextureFormat,n:u32)->RenderPipeline {
     let m=d.create_shader_module(ShaderModuleDescriptor{label:None,source:ShaderSource::Wgsl(code.into())});

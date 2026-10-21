@@ -2604,7 +2604,11 @@ impl Gpu {
         let key = self.pipe_key(vs, ps, layout, &strides, self.s.topo, strip_code, &st, &pi);
         let _ = (vs_id, ps_id);
         match self.pipelines.get(&key) {
-            Some(PipeEntry::Done(p)) => return p.clone(),
+            Some(PipeEntry::Done(Some(p))) => return Some(p.clone()),
+            Some(PipeEntry::Done(None)) => {
+                crate::host::report_fatal(format!("required pipeline failed: VS {} PS {}",vs.label,ps.map(|p|p.label.as_str()).unwrap_or("none")));
+                panic!("required pipeline failed");
+            }
             Some(PipeEntry::Pending) => return self.wait_required_pipeline(&key),
             None => {}
         }

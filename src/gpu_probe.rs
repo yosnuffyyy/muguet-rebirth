@@ -20,9 +20,9 @@ pub fn finish(buf:Option<Buffer>, stage:usize, frame:u64) {
     let label=if stage==0 {"game-backbuffer"} else {"surface-after-blit"};
     let Some(buf)=buf else {crate::rebirth::logs::checkpoint(&format!("pixel probe {label} frame {frame}: UNKNOWN (format or COPY_SRC unavailable)"),false);return;};
     let owned=buf.clone();
-    buf.map_async(MapMode::Read,..,move |result| {
+    buf.slice(..).map_async(MapMode::Read,move |result| {
         if let Err(e)=result {crate::rebirth::logs::checkpoint(&format!("pixel probe {label}: map failed {e}"),false);return;}
-        let data=owned.get_mapped_range(..);
+        let data=match owned.slice(..).get_mapped_range() {Ok(data)=>data,Err(e)=>{crate::rebirth::logs::checkpoint(&format!("pixel probe {label}: mapped range failed {e}"),false);owned.unmap();return;}};
         let pixels:Vec<_>=(0..5).map(|i|<[u8;4]>::try_from(&data[i*256..i*256+4]).unwrap()).collect();
         let nonblack=pixels.iter().filter(|p|p[..3].iter().any(|&b|b!=0)).count();
         let hash=pixels.iter().flatten().fold(14695981039346656037u64,|h,&b|(h^b as u64).wrapping_mul(1099511628211));
