@@ -44,7 +44,8 @@ pub fn apply() -> Result<Vec<String>> {
     std::env::set_var("MUGUET_RES", format!("{w}x{h}"));
     std::env::set_var("MUGUET_START_MODE", s.mode.to_string());
     std::env::set_var("MUGUET_TOUCH_SENS", s.touch_sensitivity.to_string());
-    std::env::set_var("MUGUET_MOUSE_SENS", s.controller_sensitivity.to_string());
+    // Physical mouse gain stays neutral; touch/controller have independent frozen gains.
+    std::env::set_var("MUGUET_MOUSE_SENS", "1");
     if s.show_fps {
         std::env::set_var("MUGUET_SHOW_FPS", "1");
     } else {

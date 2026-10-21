@@ -177,7 +177,7 @@ pub fn poll() -> bool {
         };
         let (dx, dy) = (curve(rs.xAxis().value()), -curve(rs.yAxis().value()));
         if dx != 0.0 || dy != 0.0 {
-            let speed = LOOK_SPEED * input::look_sens();
+            let speed = LOOK_SPEED * input::controller_look_sens();
             input::mouse_delta_f(dx * speed * dt, dy * speed * dt);
         }
     }

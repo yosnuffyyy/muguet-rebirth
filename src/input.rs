@@ -177,16 +177,26 @@ pub fn mouse_pos(x: i32, y: i32) {
 }
 
 static SENS: LazyLock<f64> = LazyLock::new(|| std::env::var("MUGUET_MOUSE_SENS").ok().and_then(|v| v.parse().ok()).unwrap_or(2.0));
+// Rebirth freezes independent gains; upstream desktop behavior stays unchanged.
+fn configured_look_gain(settings: Option<&crate::rebirth::settings::Settings>, controller: bool) -> Option<f64> {
+    settings.map(|s| if controller { s.controller_sensitivity } else { s.touch_sensitivity })
+}
 pub fn look_sens() -> f64 {
-    std::env::var("MUGUET_TOUCH_SENS").ok().and_then(|v| v.parse::<f64>().ok()).filter(|v| *v > 0.0).unwrap_or(1.0).min(20.0)
+    configured_look_gain(crate::rebirth::current().map(|l| &l.settings), false).unwrap_or_else(||
+        std::env::var("MUGUET_TOUCH_SENS").ok().and_then(|v| v.parse::<f64>().ok()).filter(|v| *v > 0.0).unwrap_or(1.0).min(20.0))
+}
+pub fn controller_look_sens() -> f64 {
+    configured_look_gain(crate::rebirth::current().map(|l| &l.settings), true).unwrap_or_else(look_sens)
 }
 static FRAC: Mutex<(f64, f64)> = Mutex::new((0.0, 0.0));
 
 pub fn mouse_delta_f(dx: f64, dy: f64) {
+    // Touch/controller call sites already apply their source's frozen gain.
+    let gain = if crate::rebirth::current().is_some() { 1.0 } else { *SENS };
     let (ix, iy) = {
         let mut f = FRAC.lock().unwrap();
-        f.0 += dx * *SENS;
-        f.1 += dy * *SENS;
+        f.0 += dx * gain;
+        f.1 += dy * gain;
         let (ix, iy) = (f.0.trunc(), f.1.trunc());
         f.0 -= ix;
         f.1 -= iy;
@@ -206,4 +216,23 @@ fn mouse_delta(dx_: i32, dy_: i32) {
 }
 pub fn wheel(notches: i32) {
     if notches != 0 { if let Some(z) = word(DZ) { z.fetch_add(notches, Ordering::SeqCst); } }
+}
+
+#[cfg(test)]
+mod rebirth_tests {
+    use super::*;
+    #[test]
+    fn source_gains_are_independent_and_desktop_is_unchanged() {
+        let mut s = crate::rebirth::settings::Settings::default();
+        s.touch_sensitivity = 0.25;
+        s.controller_sensitivity = 2.0;
+        assert_eq!(configured_look_gain(Some(&s), false), Some(0.25));
+        assert_eq!(configured_look_gain(Some(&s), true), Some(2.0));
+        s.touch_sensitivity = 1.5;
+        assert_eq!(configured_look_gain(Some(&s), true), Some(2.0));
+        s.controller_sensitivity = 0.5;
+        assert_eq!(configured_look_gain(Some(&s), false), Some(1.5));
+        assert_eq!(configured_look_gain(None, true), None);
+        assert_eq!(configured_look_gain(None, false), None);
+    }
 }

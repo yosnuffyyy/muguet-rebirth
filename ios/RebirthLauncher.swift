@@ -56,7 +56,7 @@ struct LauncherView:View {
             VStack(spacing:0) {
                 if geometry.size.width < 660 {ScrollView(.horizontal,showsIndicators:false){HStack{navigation}}.padding(10)}
                 HStack(spacing:0) {
-                    if geometry.size.width >= 660 {VStack(alignment:.leading,spacing:5){Text("REBIRTH").font(.headline).foregroundStyle(gold).padding(.bottom,14);navigation;Spacer();Text("MUGUET FORK\nGTA V (Test Build)").font(.caption2).foregroundStyle(.secondary)}.padding(16).frame(width:172).background(Color.white.opacity(0.03))}
+                    if geometry.size.width >= 660 {ScrollView {VStack(alignment:.leading,spacing:5){Text("REBIRTH").font(.headline).foregroundStyle(gold).padding(.bottom,14);navigation;Spacer();Text("MUGUET FORK\nGTA V (Test Build)").font(.caption2).foregroundStyle(.secondary)}.padding(16)}.frame(width:172).background(Color.white.opacity(0.03))}
                     ScrollView {VStack(alignment:.leading,spacing:18){
                         Text(page.rawValue).font(.title2.bold())
                         if let error {Text(error).foregroundStyle(.red).fixedSize(horizontal:false,vertical:true)}
