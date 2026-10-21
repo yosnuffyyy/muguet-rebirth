@@ -37,7 +37,19 @@ fn key_byte(vk: u8) -> Option<&'static AtomicU8> {
     base().map(|p| unsafe { &*(p.add(vk as usize) as *const AtomicU8) })
 }
 
-pub fn publish(block: u64) {
+pub fn publish(raw: i64) -> anyhow::Result<()> {
+    use crate::rebirth::input_abi::{decode, InputCall};
+    let bytes = RT.get().ok_or_else(|| anyhow::anyhow!("input before runtime"))?.mem.data_size() as u64;
+    let block = match decode(raw, bytes)? {
+        InputCall::Publish(block) => block,
+        InputCall::BrowserPadHook(pointer) => {
+            static REPORTED: AtomicBool = AtomicBool::new(false);
+            if !REPORTED.swap(true, Ordering::Relaxed) {
+                crate::rebirth::logs::checkpoint(&format!("tagged browser-controller callback 0x{pointer:x}; no browser pad snapshot, native Muguet keyboard/mouse controller path retained; input block unchanged"), false);
+            }
+            return Ok(());
+        }
+    };
     BLOCK.store(block, Ordering::Release);
     let (w, h) = *SIZE.lock().unwrap();
     if let Some(e) = ext(2) { e.store(w, Ordering::SeqCst); }
@@ -50,7 +62,9 @@ pub fn publish(block: u64) {
             unsafe { &*(p.add(440) as *const AtomicI32) }.store(m, Ordering::SeqCst);
         }
     }
+    crate::rebirth::logs::checkpoint(&format!("input published block=0x{block:x} mode_word={:?} at +440 (publication, not gameplay)", base().map(|p| unsafe { &*(p.add(440) as *const AtomicI32) }.load(Ordering::SeqCst))), false);
     eprintln!("[input] engine input block at 0x{block:x}");
+    Ok(())
 }
 
 pub fn set_size(w: i32, h: i32) {

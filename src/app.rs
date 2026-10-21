@@ -102,6 +102,8 @@ impl ApplicationHandler for App {
         match event {
             WindowEvent::CloseRequested => {
                 crate::mp::shutdown();
+                if crate::host::stop_reason().is_some() { return; }
+                crate::rebirth::logs::checkpoint("engine main returned; orderly process exit requested (not proof of gameplay)", true);
                 std::process::exit(0);
             }
             WindowEvent::Resized(_) => {
@@ -207,12 +209,13 @@ impl App {
                 let rt = match rt.map(Ok).unwrap_or_else(|| crate::make_runtime(&startup)) {
                     Ok(rt) => rt,
                     Err(e) => {
-                        eprintln!("[host] {e:#}");
+                        crate::host::report_fatal(format!("runtime creation failed: {e:#}"));
                         return;
                     }
                 };
                 if let Err(e) = crate::run_engine(&rt, args) {
-                    eprintln!("[host] engine failed: {e:?}");
+                    crate::host::report_fatal(format!("engine failed: {e:?}"));
+                    return;
                 }
                 std::process::exit(0);
             })
@@ -227,7 +230,7 @@ impl App {
         extern "C" {
             fn muguet_show_launcher(view_controller: *mut std::ffi::c_void, done: extern "C" fn());
             fn muguet_hold_refresh(hz: f32);
-            fn muguet_memory_limit() -> u64;
+            fn muguet_address_entitled() -> i32;
             fn muguet_memory_entitled() -> i32;
         }
         if self.started { return; }
@@ -246,8 +249,9 @@ impl App {
         }
         if PLAY.load(Ordering::SeqCst) {
             let settings = match crate::config::reload() { Ok(s)=>s, Err(e)=>{eprintln!("[rebirth] launch rejected: {e:#}"); PLAY.store(false,Ordering::SeqCst); return;} };
-            let (limit, entitled) = unsafe { (muguet_memory_limit(), muguet_memory_entitled()) };
-            eprintln!("[host] iOS gives the game {} MB, increased memory limit entitlement: {}", limit >> 20, match entitled { 1 => "yes", 0 => "no", _ => "unknown" });
+            let (memory, address) = unsafe { (muguet_memory_entitled(), muguet_address_entitled()) };
+            crate::rebirth::logs::checkpoint(&format!("installed entitlements increased-memory-limit={memory} extended-virtual-addressing={address} (1=yes, 0=no, -1=unknown); no fixed RAM grant assumed"), false);
+            crate::startup::monitor();
             let uncapped = settings.iter().any(|a| a == "-frameLimit=0");
             unsafe { muguet_hold_refresh(if uncapped { 120.0 } else { 60.0 }) };
             self.args.retain(|a| !a.starts_with("-frameLimit=") && !a.starts_with("-wasmstartchoice=") && !a.starts_with("-FrameQueueLimit="));

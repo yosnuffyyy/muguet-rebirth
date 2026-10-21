@@ -1,5 +1,6 @@
 """Package the actual linked Rust/AOT application; no game archives or shaders."""
 import hashlib,json,os,pathlib,plistlib,shutil,subprocess,sys,zipfile
+from ios_entitlements import validate, verify_signature
 root=pathlib.Path(__file__).resolve().parent.parent
 os.chdir(root)
 binary=pathlib.Path(sys.argv[1]).resolve()
@@ -14,8 +15,11 @@ info.update(plistlib.loads((root/'build/icon-info.plist').read_bytes()))
 info.update(CFBundleIdentifier='io.github.yosnuffyyy.gtanativeprobe',CFBundleExecutable='muguet',MinimumOSVersion='15.0')
 assert info['CFBundleDisplayName']=='GTA V (Test Build)'
 (app/'Info.plist').write_bytes(plistlib.dumps(info))
+validate(pathlib.Path('ios/Muguet-sideload.entitlements').read_bytes())
 subprocess.run(['codesign','--force','--sign','-','--entitlements','ios/Muguet-sideload.entitlements','--generate-entitlement-der',str(app)],check=True)
 subprocess.run(['codesign','--verify','--strict',str(app)],check=True)
+signed_entitlements = verify_signature(app)
+(root/'evidence/local/signed-entitlements.json').write_text(json.dumps(signed_entitlements,indent=2)+'\n')
 name=f"GTA-Rebirth-{info['CFBundleShortVersionString']}-{subprocess.check_output(['git','rev-parse','--short=12','HEAD'],text=True).strip()}-unsigned.ipa"
 ipa=root/'build'/name
 with zipfile.ZipFile(ipa,'x',compression=zipfile.ZIP_DEFLATED,compresslevel=6) as z:

@@ -1,5 +1,6 @@
 //! Project-specific adapters on the complete upstream Muguet runtime.
 pub mod abi;
+pub mod input_abi;
 pub mod assets;
 pub mod layout;
 pub mod logs;

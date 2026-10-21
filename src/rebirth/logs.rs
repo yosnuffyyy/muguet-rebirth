@@ -34,6 +34,7 @@ struct Writer {
     keep: usize,
     session: u128,
     sequence: u64,
+    checkpoint_sequence: u64,
     paths: Vec<PathBuf>,
 }
 impl Writer {
@@ -56,6 +57,7 @@ impl Writer {
             keep,
             session: stamp(),
             sequence: 0,
+            checkpoint_sequence: 0,
             paths,
         };
         w.next()?;
@@ -96,6 +98,14 @@ impl Writer {
         }
         Ok(())
     }
+    fn checkpoint(&mut self, message: &str, durable: bool) -> Result<()> {
+        static START: OnceLock<std::time::Instant> = OnceLock::new();
+        self.checkpoint_sequence += 1;
+        let message: String = message.chars().take(2048).map(|c| if c == '\n' || c == '\r' { ' ' } else { c }).collect();
+        self.append(format!("[checkpoint {} +{}ms] {message}\n", self.checkpoint_sequence, START.get_or_init(std::time::Instant::now).elapsed().as_millis()).as_bytes())?;
+        if durable { self.file.as_ref().unwrap().sync_data()?; }
+        Ok(())
+    }
     fn snapshot(&self) -> Result<Vec<(File, u64)>> {
         self.paths
             .iter()
@@ -125,6 +135,16 @@ fn export_snapshot(files: Vec<(File, u64)>, destination: &Path) -> Result<()> {
     output.sync_all()?;
     Ok(())
 }
+/// Direct records bypass the asynchronous stdout pipe. No signal handler is used.
+pub fn checkpoint(message: &str, durable: bool) {
+    if let Some(writer) = WRITER.get() {
+        let mut writer = writer.lock().unwrap_or_else(|p| p.into_inner());
+        if let Err(e) = writer.checkpoint(message, durable) {
+            if let Ok(mut error) = CAPTURE_ERROR.lock() { *error = Some(e.to_string()); }
+        }
+    } else { eprintln!("[checkpoint] {message}"); }
+}
+
 #[cfg(target_os = "ios")]
 pub fn start(root: &Path) -> Result<()> {
     use std::os::fd::{AsRawFd, FromRawFd};
@@ -179,6 +199,17 @@ pub fn start(root: &Path) -> Result<()> {
     WRITER
         .set(writer)
         .map_err(|_| anyhow::anyhow!("log capture already active"))?;
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        // Never recursively wait on the writer if it is the panicking thread.
+        if let Some(writer) = WRITER.get() {
+            if let Ok(mut writer) = writer.try_lock() {
+                let _ = writer.checkpoint(&format!("RUST PANIC: {info}"), true);
+            }
+        }
+        previous(info);
+    }));
+    checkpoint("launcher logging ready; no PLAY requested yet. Abrupt endings need OS crash/Jetsam evidence, not inference", true);
     Ok(())
 }
 pub fn export(root: &Path) -> Result<PathBuf> {
@@ -212,6 +243,26 @@ pub fn export(root: &Path) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn ordered_durable_checkpoints_survive_reopen_and_bound_messages() {
+        let root = std::env::temp_dir().join(format!("rebirth-checkpoints-{}", stamp()));
+        let mut w = Writer::new(&root, 32768, 3).unwrap();
+        w.checkpoint("worker ready", false).unwrap();
+        w.checkpoint("fatal\nreason", true).unwrap();
+        w.checkpoint(&"é".repeat(5000), true).unwrap();
+        let first = w.paths[0].clone();
+        drop(w);
+        let text = fs::read_to_string(&first).unwrap();
+        assert!(text.contains("[checkpoint 1 "));
+        assert!(text.contains("[checkpoint 2 "));
+        assert!(text.contains("fatal reason"));
+        assert_eq!(text.lines().count(), 3);
+        assert_eq!(text.matches('é').count(), 2048);
+        let w = Writer::new(&root, 32768, 3).unwrap();
+        assert!(w.paths.contains(&first));
+        drop(w);
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn bounded_rotation_and_stable_snapshot() {
         let root = std::env::temp_dir().join(format!("rebirth-logs-{}", stamp()));

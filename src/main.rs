@@ -10,6 +10,9 @@ mod gpu;
 mod heapcheck;
 mod host;
 mod input;
+mod startup;
+#[cfg(feature = "jit")]
+mod input_check;
 mod import;
 mod io;
 #[cfg(target_os = "ios")]
@@ -177,6 +180,7 @@ fn main() -> Result<()> {
         call_export(&mut store, &inst, "_emscripten_tls_init", &[])?;
         call_export(&mut store, &inst, "__wasm_call_ctors", &[])?;
         eprintln!("[rebirth-check] original TLS and constructors completed; world/main/GPU not started");
+        input_check::verify(&rt, &std::fs::read(wasm)?)?;
         return Ok(());
     }
 
@@ -291,9 +295,11 @@ pub fn make_runtime(startup: &config::Startup) -> Result<Arc<Runtime>> {
 
 pub fn run_engine(rt: &Arc<Runtime>, args: Vec<String>) -> Result<()> {
     set_interactive_qos();
+    rebirth::logs::checkpoint("engine main instantiation begin", false);
     let (mut store, instance) = instantiate(rt, 0)?;
     call_export(&mut store, &instance, "_emscripten_tls_init", &[])?;
     call_export(&mut store, &instance, "__wasm_call_ctors", &[])?;
+    rebirth::logs::checkpoint("engine main TLS and constructors ready", false);
     let argv = build_argv(&mut store, &instance, &rt.mem, &args)?;
     eprintln!("[host] main: {}", args.join(" "));
     let main = instance.get_func(&mut store, "__main_argc_argv").context("no main")?;
@@ -305,8 +311,9 @@ pub fn run_engine(rt: &Arc<Runtime>, args: Vec<String>) -> Result<()> {
             loop { std::thread::park(); }
         }
         Err(e) => {
-            eprintln!("[host] main trapped: {e:?}");
+            host::report_fatal(format!("main trapped: {e:?}"));
             stopped();
+            return Err(e.into());
         }
     }
     Ok(())
@@ -508,13 +515,15 @@ pub fn spawn_pthread(pthread_ptr: u64, start_routine: u64, arg: u64) -> i32 {
         .spawn(move || {
             set_qos(qos);
             if let Err(e) = run_pthread(&rt, pthread_ptr, start_routine, arg) {
-                eprintln!("[host] pthread 0x{pthread_ptr:x} failed: {e:?}");
+                host::report_fatal(format!("pthread 0x{pthread_ptr:x} startup/exit failed: {e:?}"));
             }
         });
-    if spawned.is_ok() { 0 } else { 6 }
+    match spawned { Ok(_) => 0, Err(e) => { rebirth::logs::checkpoint(&format!("worker spawn failed pthread=0x{pthread_ptr:x}: {e}"), true); 6 } }
 }
 
 fn run_pthread(rt: &Arc<Runtime>, ptr: u64, start_routine: u64, arg: u64) -> Result<()> {
+    let count = startup::WORKERS_STARTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if count < 64 { rebirth::logs::checkpoint(&format!("worker instantiation begin pthread=0x{ptr:x} entry={start_routine} name={:?}", std::thread::current().name()), false); }
     let (mut store, inst) = instantiate(rt, ptr)?;
 
     let high = read_u64(&rt.mem, ptr + 80).unwrap_or(0);
@@ -525,6 +534,8 @@ fn run_pthread(rt: &Arc<Runtime>, ptr: u64, start_routine: u64, arg: u64) -> Res
     call_export(&mut store, &inst, "_emscripten_thread_init", &[Val::I64(ptr as i64), Val::I32(0), Val::I32(0), Val::I32(1), Val::I64(0), Val::I32(0)])?;
     call_export(&mut store, &inst, "_emscripten_tls_init", &[])?;
     host::mailbox_await(&rt.mem, ptr);
+    startup::WORKERS_READY.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if count < 64 { rebirth::logs::checkpoint(&format!("worker TLS/stack/mailbox ready pthread=0x{ptr:x}; entering engine routine"), false); }
 
     let table = inst
         .get_table(&mut store, "__indirect_function_table")
@@ -539,7 +550,7 @@ fn run_pthread(rt: &Arc<Runtime>, ptr: u64, start_routine: u64, arg: u64) -> Res
         Err(_) if host::take_unwind() => return Ok(()),
         Err(e) => {
             let name = read_thread_name(&rt.mem, ptr);
-            eprintln!("[host] thread {name} trapped: {e:?}");
+            host::report_fatal(format!("thread {name} trapped: {e:?}"));
             stopped();
             return Ok(());
         }

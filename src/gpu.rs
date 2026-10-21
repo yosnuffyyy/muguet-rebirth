@@ -57,6 +57,7 @@ pub fn start(mem: &SharedMemory, ring: u64, size: u64, dbg: u64) {
             let mut gpu = match Gpu::new(mem.clone(), ring, size, dbg, handoff) {
                 Ok(g) => g,
                 Err(e) => {
+                    crate::host::report_fatal(format!("GPU initialization failed: {e:#}"));
                     log(&format!("init failed: {e:#}"));
                     drain_forever(&mem, ring);
                 }
@@ -987,10 +988,11 @@ impl Gpu {
                 let n = k.entry(key).or_insert(0);
                 *n += 1;
                 if *n == 1 && k.len() <= 60 {
-                    log(&format!("validation error: {}", &msg[..msg.len().min(900)]));
+                    crate::rebirth::logs::checkpoint(&format!("GPU uncaptured error: {msg}"), true);
+                    log(&format!("validation error: {}", msg.chars().take(900).collect::<String>()));
                 }
             }));
-            device.set_device_lost_callback(|reason, message| log(&format!("GPU device lost ({reason:?}): {message}")));
+            device.set_device_lost_callback(|reason, message| crate::rebirth::logs::checkpoint(&format!("GPU device lost ({reason:?}): {message}"), true));
         }
         let info = adapter.get_info();
         log(&format!("device ready: {} ({:?}), features {:?}", info.name, info.backend, features));
@@ -1170,6 +1172,7 @@ impl Gpu {
         self.hdr(1).store(tail, Ordering::SeqCst);
         self.hdr(2).store(1, Ordering::SeqCst);
         log("running");
+        crate::rebirth::logs::checkpoint(&format!("graphics command ring ready at 0x{:x}", self.ring), false);
         loop {
             if SUSPENDED.load(Ordering::Relaxed) {
                 let _ = self.device.poll(PollType::Wait { submission_index: None, timeout: None });
@@ -1209,6 +1212,7 @@ impl Gpu {
         let ring_w = self.ring / 4;
         let mut since = 0u32;
         let mut executed = 0i32;
+        let mut first = crate::startup::GPU_COMMANDS.load(Ordering::Relaxed) == 0;
         while tail != head {
             let base = ring_w + (tail as u64 >> 2);
             let op = self.u(base);
@@ -1218,12 +1222,14 @@ impl Gpu {
                 continue;
             }
             let p = base + 2;
+            if first { crate::rebirth::logs::checkpoint(&format!("first GPU command opcode={op} words={n}"), false); first = false; }
             self.exec(op, p, n);
             executed += 1;
             tail += (n * 4 + 8) as i32;
             since += 1;
             if since >= 512 {
                 since = 0;
+                crate::startup::GPU_COMMANDS.fetch_add(executed as u64, Ordering::Relaxed);
                 self.hdr(3).fetch_add(executed, Ordering::Relaxed);
                 executed = 0;
                 self.hdr(1).store(tail, Ordering::SeqCst);
@@ -1232,6 +1238,7 @@ impl Gpu {
                 if self.inflight.load(Ordering::SeqCst) > 0 { let _ = self.device.poll(PollType::Poll); }
             }
         }
+        crate::startup::GPU_COMMANDS.fetch_add(executed as u64, Ordering::Relaxed);
         self.hdr(3).fetch_add(executed, Ordering::Relaxed);
         tail
     }
@@ -3627,6 +3634,7 @@ impl Gpu {
     }
 
     fn present(&mut self, id: u32) {
+        if crate::startup::PRESENT_REQUESTS.fetch_add(1, Ordering::Relaxed) == 0 { crate::rebirth::logs::checkpoint("first PRESENT command received (not display completion)", false); }
         self.materialize_clears(id);
         let visible = !OCCLUDED.load(Ordering::Relaxed);
         if let (Some(t), Some(_), true) = (self.tex(id), self.surface.as_ref(), visible) {
@@ -3687,6 +3695,7 @@ impl Gpu {
                 }
                 self.flush();
                 self.queue.present(frame);
+                if crate::startup::SURFACE_PRESENTS.fetch_add(1, Ordering::Relaxed) == 0 { crate::rebirth::logs::checkpoint("first surface queue.present returned; actual drawable completion and gameplay UNKNOWN", true); }
             } else {
                 self.flush();
             }

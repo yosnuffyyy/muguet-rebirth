@@ -6,7 +6,8 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 
 static UNDERRUN_FRAMES: AtomicU64 = AtomicU64::new(0);
-static CALLBACKS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static NONZERO_SAMPLES: AtomicU64 = AtomicU64::new(0);
+pub(crate) static CALLBACKS: AtomicU64 = AtomicU64::new(0);
 
 static STARTED: AtomicBool = AtomicBool::new(false);
 
@@ -47,17 +48,20 @@ fn play(ring: u64, capacity: u32) -> anyhow::Result<cpal::Stream> {
             let read = hdr(1).load(Ordering::SeqCst) as u32;
             let write = hdr(0).load(Ordering::SeqCst) as u32;
             let take = (write.wrapping_sub(read) as usize).min(frames);
+            let mut nonzero = 0u64;
             for i in 0..take {
                 let at = ((read.wrapping_add(i as u32) & mask) * 2) as usize;
                 unsafe {
                     let p = (data as *const f32).add(at);
                     out[2 * i] = *p * gain;
                     out[2 * i + 1] = *p.add(1) * gain;
+                    nonzero += u64::from(out[2*i].is_finite() && out[2*i] != 0.0) + u64::from(out[2*i+1].is_finite() && out[2*i+1] != 0.0);
                 }
             }
             for s in &mut out[take * 2..] { *s = 0.0; }
             UNDERRUN_FRAMES.fetch_add((frames - take) as u64, Ordering::Relaxed);
             CALLBACKS.fetch_add(1, Ordering::Relaxed);
+            NONZERO_SAMPLES.fetch_add(nonzero, Ordering::Relaxed);
             hdr(1).store(read.wrapping_add(take as u32) as i32, Ordering::SeqCst);
             hdr(3).fetch_add(1, Ordering::SeqCst);
         },

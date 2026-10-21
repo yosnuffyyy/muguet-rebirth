@@ -201,6 +201,22 @@ mod tests {
         }
     }
     #[test]
+    fn both_modes_at_requested_resolutions_remain_isolated() {
+        for (width, height) in [(640, 360), (1280, 720)] {
+            for mode in [1, 2, 1, 2] {
+                let mut s = Settings::default();
+                s.width = width; s.height = height; s.mode = mode;
+                let restored = Settings::parse(&serde_json::to_vec(&s).unwrap()).unwrap();
+                assert_eq!(restored.resolution(), (width, height));
+                let args = restored.engine_args().unwrap();
+                assert!(args.contains(&format!("-wasmstartchoice={mode}")));
+                assert_eq!(args.contains(&"-noautoload".to_string()), mode == 1);
+                assert_eq!(args.iter().any(|a| a.starts_with("-playercoords=")), mode == 2);
+            }
+        }
+        // Launch contract coverage only; this does not assert an in-game spawn.
+    }
+    #[test]
     fn rejects_unsupported_and_roundtrips() {
         let s = Settings::default();
         assert_eq!(

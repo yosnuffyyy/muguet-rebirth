@@ -37,6 +37,7 @@ pub fn engine_stopped() -> bool {
 }
 
 pub fn report_fatal(reason: String) {
+    crate::rebirth::logs::checkpoint(&format!("FATAL: {reason}"), true);
     let mut fatal = FATAL.lock().unwrap();
     if fatal.is_none() { *fatal = Some(reason); }
     STOPPED.store(true, Ordering::Release);
@@ -138,7 +139,11 @@ pub fn call(mut caller: Caller<'_, HostState>, idx: usize, params: &[Val], resul
 
             export_call(&mut caller, "_emscripten_thread_init", &[Val::I64(tb), Val::I32(1), Val::I32(1), Val::I32(1), Val::I64(1_048_576), Val::I32(0)])?;
         }
-        "muguet_script" => crate::mp::script_tick(&mut caller, int(params, 0) as u64, int(params, 1) as u64)?,
+        "muguet_script" => {
+            crate::startup::SCRIPT_TICKS.store(n, Ordering::Relaxed);
+            if n == 1 { crate::rebirth::logs::checkpoint("first original GtaThread::Update hook (script tick, not proof of player spawn)", false); }
+            crate::mp::script_tick(&mut caller, int(params, 0) as u64, int(params, 1) as u64)?;
+        },
         "muguet_explosion" => crate::mp::explosion(int(params, 0) as u64),
         "muguet_timewarp" => set_int(results, crate::mp::time_warp(int(params, 0))),
         "muguet_resource_map" => merge_physical_pages(mem, int(params, 0) as u64),
@@ -210,6 +215,7 @@ pub fn call(mut caller: Caller<'_, HostState>, idx: usize, params: &[Val], resul
         "wasm_print_line_js" | "wasm_hang_line_js" => {
             let line = read_cstr(mem, int(params, 0) as u64);
             if let Some(at) = line.find("Fatal Error: ") {
+                crate::rebirth::logs::checkpoint(&format!("ENGINE FATAL: {}", &line[at + 13..]), true);
                 FATAL.lock().unwrap().get_or_insert_with(|| line[at + 13..].to_string());
             }
             eprintln!("[eng] {line}");
@@ -221,7 +227,7 @@ pub fn call(mut caller: Caller<'_, HostState>, idx: usize, params: &[Val], resul
         "wasm_httpfs_manifest_js" => fs::httpfs_manifest(mem, params, results),
         "wasm_httpfs_io_start_js" => io::start(mem, int(params, 0) as u64),
         "wgpu_start_worker" => crate::gpu::start(mem, int(params, 0) as u64, int(params, 1) as u64, int(params, 2) as u64),
-        "wasm_input_publish_js" => crate::input::publish(int(params, 0) as u64),
+        "wasm_input_publish_js" => crate::input::publish(int(params, 0))?,
         "wasm_audio_publish_js" => crate::audio::start(int(params, 0) as u64, int(params, 1) as u32),
         "fd_write" if int(params, 0) <= 2 => {
             let (iovs, count) = (int(params, 1) as u64, int(params, 2) as u64);
