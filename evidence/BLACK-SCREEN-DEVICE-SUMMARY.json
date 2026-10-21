@@ -1,0 +1,64 @@
+{
+  "origin": "physical iPhone log supplied by user; no new device run",
+  "filename": "Blackrebirth-1792626002794032000-0.txt",
+  "sha256": "74078e66df4d6e01f437eaaf2a146abf7365cf4691d4dd456af2de21cd51f4d3",
+  "bytes": 9277363,
+  "sessions": [
+    {
+      "header": "=== Project Rebirth / Muguet / original engine e65bec476e8fd8125515150c24037c9bd0d0c46530e3544f9d389ab108b5592e / session 1792622253552869000 ===",
+      "settings": null,
+      "last_gpu_summary": null,
+      "pipeline_failures": 0,
+      "last_heartbeat": null
+    },
+    {
+      "header": "=== Project Rebirth / Muguet / original engine e65bec476e8fd8125515150c24037c9bd0d0c46530e3544f9d389ab108b5592e / session 1792623208965449000 ===",
+      "settings": "[rebirth] frozen launch: {\"schema\":1,\"mode\":2,\"preset\":\"Custom\",\"width\":1280,\"height\":720,\"scale\":100,\"fps\":30,\"texture\":0,\"fxaa\":false,\"shadow\":-1,\"reflection\":0,\"water\":0,\"particles\":0,\"grass\":0,\"postfx\":0,\"anisotropy\":0,\"ssao\":0,\"density\":0.0,\"volume\":1.0,\"mute\":false,\"touch_sensitivity\":1.0,\"controller_sensitivity\":1.0,\"show_fps\":true}",
+      "last_gpu_summary": null,
+      "pipeline_failures": 0,
+      "last_heartbeat": null
+    },
+    {
+      "header": "=== Project Rebirth / Muguet / original engine e65bec476e8fd8125515150c24037c9bd0d0c46530e3544f9d389ab108b5592e / session 1792623225319347000 ===",
+      "settings": "[rebirth] frozen launch: {\"schema\":1,\"mode\":1,\"preset\":\"Custom\",\"width\":640,\"height\":360,\"scale\":100,\"fps\":30,\"texture\":0,\"fxaa\":false,\"shadow\":-1,\"reflection\":0,\"water\":0,\"particles\":0,\"grass\":0,\"postfx\":0,\"anisotropy\":0,\"ssao\":0,\"density\":0.25,\"volume\":1.0,\"mute\":false,\"touch_sensitivity\":1.0,\"controller_sensitivity\":1.0,\"show_fps\":true}",
+      "last_gpu_summary": null,
+      "pipeline_failures": 0,
+      "last_heartbeat": null
+    },
+    {
+      "header": "=== Project Rebirth / Muguet / original engine e65bec476e8fd8125515150c24037c9bd0d0c46530e3544f9d389ab108b5592e / session 1792623268728830000 ===",
+      "settings": null,
+      "last_gpu_summary": null,
+      "pipeline_failures": 0,
+      "last_heartbeat": null
+    },
+    {
+      "header": "=== Project Rebirth / Muguet / original engine e65bec476e8fd8125515150c24037c9bd0d0c46530e3544f9d389ab108b5592e / session 1792625710763709000 ===",
+      "settings": "[rebirth] frozen launch: {\"schema\":1,\"mode\":1,\"preset\":\"Custom\",\"width\":640,\"height\":360,\"scale\":100,\"fps\":30,\"texture\":0,\"fxaa\":false,\"shadow\":-1,\"reflection\":0,\"water\":0,\"particles\":0,\"grass\":0,\"postfx\":0,\"anisotropy\":0,\"ssao\":0,\"density\":0.25,\"volume\":1.0,\"mute\":false,\"touch_sensitivity\":1.0,\"controller_sensitivity\":1.0,\"show_fps\":true}",
+      "last_gpu_summary": "[wgpu] fps: 31.1 (1546 MB memory, game heap 1400 MB, gpu 394 MB, compressed 224 MB, 312 frames, 27231 clears folded, 165 draws/frame, 6 draws waiting for a compiling pipeline, 3.1 submits/frame, 20.9 passes/frame, 36361 skipped total, pipelines 215, bind groups cached 760, validation errors 4360)",
+      "pipeline_failures": 0,
+      "last_heartbeat": "[checkpoint 116 +74270ms] heartbeat elapsed=70s available_bytes=1918808256 footprint_bytes=1621184320 (MAX=unknown) guest_accessible_bytes=Some(1468071936) workers_started/ready=44/44 commands=5103515 present_requests=2084 surface_present_calls=2084 script_ticks=54529 suspended=false audio_callbacks/nonzero_output_samples=3276/5065525; guest resident/GPU resident/display completion/player spawn UNKNOWN"
+    },
+    {
+      "header": "=== Project Rebirth / Muguet / original engine e65bec476e8fd8125515150c24037c9bd0d0c46530e3544f9d389ab108b5592e / session 1792625789382919000 ===",
+      "settings": "[rebirth] frozen launch: {\"schema\":1,\"mode\":2,\"preset\":\"Custom\",\"width\":640,\"height\":360,\"scale\":100,\"fps\":30,\"texture\":0,\"fxaa\":false,\"shadow\":-1,\"reflection\":0,\"water\":0,\"particles\":0,\"grass\":0,\"postfx\":0,\"anisotropy\":0,\"ssao\":0,\"density\":0.25,\"volume\":1.0,\"mute\":false,\"touch_sensitivity\":1.0,\"controller_sensitivity\":1.0,\"show_fps\":true}",
+      "last_gpu_summary": "[wgpu] fps: 27.1 (2110 MB memory, game heap 1606 MB, gpu 628 MB, compressed 376 MB, 271 frames, 17310 clears folded, 818 draws/frame, 397 draws waiting for a compiling pipeline, 3.1 submits/frame, 31.3 passes/frame, 18001 skipped total, pipelines 110, bind groups cached 982, validation errors 3840)",
+      "pipeline_failures": 0,
+      "last_heartbeat": "[checkpoint 113 +52389ms] heartbeat elapsed=45s available_bytes=1315631008 footprint_bytes=2224361568 (MAX=unknown) guest_accessible_bytes=Some(1684078592) workers_started/ready=45/45 commands=7425694 present_requests=1270 surface_present_calls=1270 script_ticks=28510 suspended=true audio_callbacks/nonzero_output_samples=2106/3652600; guest resident/GPU resident/display completion/player spawn UNKNOWN"
+    },
+    {
+      "header": "=== Project Rebirth / Muguet / original engine e65bec476e8fd8125515150c24037c9bd0d0c46530e3544f9d389ab108b5592e / session 1792625843180833000 ===",
+      "settings": "[rebirth] frozen launch: {\"schema\":1,\"mode\":2,\"preset\":\"Custom\",\"width\":1280,\"height\":720,\"scale\":100,\"fps\":30,\"texture\":1,\"fxaa\":true,\"shadow\":1,\"reflection\":2,\"water\":0,\"particles\":0,\"grass\":0,\"postfx\":2,\"anisotropy\":8,\"ssao\":0,\"density\":1.0,\"volume\":1.0,\"mute\":false,\"touch_sensitivity\":1.0,\"controller_sensitivity\":1.0,\"show_fps\":true}",
+      "last_gpu_summary": "[wgpu] fps: 11.9 (2837 MB memory, game heap 1616 MB, gpu 1499 MB, compressed 776 MB, 119 frames, 28695 clears folded, 3520 draws/frame, 39 draws waiting for a compiling pipeline, 3.2 submits/frame, 98.3 passes/frame, 3465 skipped total, pipelines 181, bind groups cached 2412, validation errors 6340)",
+      "pipeline_failures": 0,
+      "last_heartbeat": "[checkpoint 113 +95654ms] heartbeat elapsed=55s available_bytes=519368392 footprint_bytes=3020624184 (MAX=unknown) guest_accessible_bytes=Some(1803616256) workers_started/ready=44/44 commands=22847755 present_requests=1354 surface_present_calls=1354 script_ticks=48544 suspended=true audio_callbacks/nonzero_output_samples=2576/4606967; guest resident/GPU resident/display completion/player spawn UNKNOWN"
+    },
+    {
+      "header": "=== Project Rebirth / Muguet / original engine e65bec476e8fd8125515150c24037c9bd0d0c46530e3544f9d389ab108b5592e / session 1792625956454845000 ===",
+      "settings": null,
+      "last_gpu_summary": null,
+      "pipeline_failures": 0,
+      "last_heartbeat": null
+    }
+  ]
+}

@@ -7,6 +7,8 @@ mod audio;
 mod config;
 mod fs;
 mod gpu;
+mod gpu_resolve;
+mod gpu_probe;
 mod heapcheck;
 mod host;
 mod input;

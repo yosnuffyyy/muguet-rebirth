@@ -2605,18 +2605,7 @@ impl Gpu {
         let _ = (vs_id, ps_id);
         match self.pipelines.get(&key) {
             Some(PipeEntry::Done(p)) => return p.clone(),
-            Some(PipeEntry::Pending) => {
-                let start = Instant::now();
-                let deadline = start + self.pipe_wait_left;
-                while !matches!(self.pipelines.get(&key), Some(PipeEntry::Done(_))) {
-                    let Ok((done, pipeline)) = self.pipe_results.recv_timeout(deadline.saturating_duration_since(Instant::now())) else { break };
-                    self.finish_pipeline(done, pipeline);
-                }
-                self.pipe_wait_left = self.pipe_wait_left.saturating_sub(start.elapsed());
-                if let Some(PipeEntry::Done(p)) = self.pipelines.get(&key) { return p.clone(); }
-                self.pending_skips += 1;
-                return None;
-            }
+            Some(PipeEntry::Pending) => return self.wait_required_pipeline(&key),
             None => {}
         }
         self.pipe_creates += 1;
@@ -2629,21 +2618,39 @@ impl Gpu {
             let id = self.uid();
             self.pipe_pending.insert(id, (key.clone(), vb_req, job.label.clone()));
             self.pipelines.insert(key.clone(), PipeEntry::Pending);
-            let _ = tx.send((id, job));
-            let start = Instant::now();
-            let deadline = start + self.pipe_wait_left;
-            while let Ok((done, pipeline)) = self.pipe_results.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
-                self.finish_pipeline(done, pipeline);
-                if done == id { break; }
+            if tx.send((id, job)).is_err() {
+                crate::host::report_fatal("pipeline compiler disconnected".into());
+                panic!("pipeline compiler disconnected");
             }
-            self.pipe_wait_left = self.pipe_wait_left.saturating_sub(start.elapsed());
-            if let Some(PipeEntry::Done(p)) = self.pipelines.get(&key) { return p.clone(); }
-            self.pending_skips += 1;
-            return None;
+            return self.wait_required_pipeline(&key);
         }
         let pl = compile_pipeline(&self.device, &job).map(|pipeline| { let uid = self.uid(); Rc::new(Pl { pipeline, uid, vb_req, label: job.label }) });
         self.pipelines.insert(key, PipeEntry::Done(pl.clone()));
         pl
+    }
+
+    // Background prewarming is retained, but a required draw cannot be dropped
+    // merely because compilation exceeds a frame's latency budget.
+    fn wait_required_pipeline(&mut self, key: &[i64]) -> Option<Rc<Pl>> {
+        let start = Instant::now();
+        loop {
+            if let Some(PipeEntry::Done(p)) = self.pipelines.get(key) {
+                if p.is_none() {
+                    crate::host::report_fatal("required draw pipeline failed compilation; see pipeline diagnostic".into());
+                    panic!("required draw pipeline failed");
+                }
+                return p.clone();
+            }
+            if start.elapsed() > Duration::from_secs(60) || crate::host::stop_reason().is_some() {
+                crate::host::report_fatal("required pipeline wait interrupted or exceeded 60 seconds".into());
+                panic!("required pipeline wait stopped");
+            }
+            match self.pipe_results.recv_timeout(Duration::from_millis(100)) {
+                Ok((id,p)) => self.finish_pipeline(id,p),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(_) => {crate::host::report_fatal("pipeline results channel disconnected".into());panic!("pipeline results disconnected");}
+            }
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2715,7 +2722,7 @@ impl Gpu {
                     targets.push(Some(ColorTargetState { format: *format, blend: if blendable { bl } else { None }, write_mask: write }));
                 }
                 let missing: Vec<_> = p.info.outputs.iter().filter(|&&l| pi.rt_formats.get(l as usize).copied().flatten().is_none()).collect();
-                if !missing.is_empty() { log_once(&format!("psout{}", p.label), &format!("{} writes colour output(s) {:?} with no render target bound", p.label, missing)); }
+                if !missing.is_empty() { log_once(&format!("psout{}", p.label), &format!("{} has unbound colour output(s) {:?}; ignored by D3D/wgpu attachment semantics (not a validation error)", p.label, missing)); }
                 Some(self.pixel_module(p, a2c, remap.as_ref())?)
             }
             None => None,
@@ -3323,21 +3330,33 @@ impl Gpu {
         self.use_tex(dst);
     }
     fn resolve(&mut self, dst: u32, dst_sub: u32, src: u32, src_sub: u32) {
+        // Finish queued texture conversion and clears before observing source bytes.
+        if self.astc_pending.contains(&src) || self.astc_pending.contains(&dst) { self.flush_astc(); }
         self.materialize_clears(src);
         self.materialize_clears(dst);
-        let (Some(s), Some(d)) = (self.tex(src), self.tex(dst)) else { return };
-        let (ss, ds) = (Self::sub_of(&s.desc, src_sub), Self::sub_of(&d.desc, dst_sub));
-        let sv = s.tex.create_view(&TextureViewDescriptor { base_mip_level: ss.0, mip_level_count: Some(1), base_array_layer: ss.1, array_layer_count: Some(1), dimension: Some(TextureViewDimension::D2), ..Default::default() });
-        let dv = d.tex.create_view(&TextureViewDescriptor { base_mip_level: ds.0, mip_level_count: Some(1), base_array_layer: ds.1, array_layer_count: Some(1), dimension: Some(TextureViewDimension::D2), ..Default::default() });
-        self.end_pass();
-        self.encoder().begin_render_pass(&RenderPassDescriptor {
-            label: None,
-            color_attachments: &[Some(RenderPassColorAttachment { view: &sv, depth_slice: None, resolve_target: Some(&dv), ops: Operations { load: LoadOp::Load, store: StoreOp::Discard } })],
-            depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
-        });
-        self.mark_color_dirty(dst);
-        self.use_tex(src);
-        self.use_tex(dst);
+        let result = (|| -> anyhow::Result<crate::gpu_resolve::Transfer> {
+            let s = self.tex(src).ok_or_else(|| anyhow::anyhow!("source texture missing"))?;
+            let d = self.tex(dst).ok_or_else(|| anyhow::anyhow!("destination texture missing"))?;
+            anyhow::ensure!(s.astc == d.astc, "transcoded/plain texture mismatch");
+            let ss = crate::gpu_resolve::subresource(s.desc.mips,s.desc.d,s.desc.skip,src_sub)?;
+            let ds = crate::gpu_resolve::subresource(d.desc.mips,d.desc.d,d.desc.skip,dst_sub)?;
+            let (st,dt) = (s.tex.clone(),d.tex.clone());
+            let supported = self.adapter.get_texture_format_features(s.format).flags.contains(TextureFormatFeatureFlags::MULTISAMPLE_RESOLVE);
+            self.end_pass();
+            crate::gpu_resolve::record(self.encoder(),&st,ss,&dt,ds,supported)
+        })();
+        match result {
+            Ok(kind) => {
+                if kind != crate::gpu_resolve::Transfer::Identity { self.mark_depth_dirty(dst); self.mark_color_dirty(dst); }
+                self.use_tex(src); self.use_tex(dst);
+                log_once(&format!("resolve-path-{kind:?}"), &format!("opcode 36 {kind:?}: source {src}/{src_sub} -> destination {dst}/{dst_sub}"));
+            }
+            Err(e) => {
+                let msg = format!("opcode 36 source {src}/{src_sub} -> destination {dst}/{dst_sub}: {e:#}");
+                crate::host::report_fatal(msg.clone());
+                panic!("{msg}");
+            }
+        }
     }
 
     fn generate_mips(&mut self, srv_id: u32) {
@@ -3645,13 +3664,13 @@ impl Gpu {
                 let (surface, window) = self.surface.as_ref().unwrap();
                 let caps = surface.get_capabilities(&self.adapter);
                 surface.configure(&self.device, &SurfaceConfiguration {
-                    usage: TextureUsages::RENDER_ATTACHMENT,
+                    usage: TextureUsages::RENDER_ATTACHMENT | if *crate::gpu_probe::ENABLED && caps.usages.contains(TextureUsages::COPY_SRC) { TextureUsages::COPY_SRC } else { TextureUsages::empty() },
                     format: self.surface_format,
                     width: w,
                     height: h,
                     present_mode: if caps.present_modes.contains(&PresentMode::Mailbox) { PresentMode::Mailbox } else { PresentMode::Fifo },
                     desired_maximum_frame_latency: 2,
-                    alpha_mode: caps.alpha_modes[0],
+                    alpha_mode: if caps.alpha_modes.contains(&CompositeAlphaMode::Opaque) { CompositeAlphaMode::Opaque } else { caps.alpha_modes[0] },
                     view_formats: vec![],
                     color_space: SurfaceColorSpace::Auto,
                 });
@@ -3660,10 +3679,7 @@ impl Gpu {
                 window.request_redraw();
             }
             if self.blit.is_none() {
-                let module = self.device.create_shader_module(ShaderModuleDescriptor { label: Some("blit"), source: ShaderSource::Wgsl(
-                    "@group(0) @binding(0) var src: texture_2d<f32>;
-                     @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f { var p = array<vec2f, 3>(vec2f(-1, -1), vec2f(3, -1), vec2f(-1, 3)); return vec4f(p[i], 0, 1); }
-                     @fragment fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f { return textureLoad(src, vec2i(pos.xy), 0); }".into()) });
+                let module = self.device.create_shader_module(ShaderModuleDescriptor { label: Some("blit"), source: ShaderSource::Wgsl(crate::gpu_probe::BLIT.into()) });
                 self.blit = Some(self.simple_pipeline(&module, Some(self.surface_format), None));
             }
             let blit = self.blit.clone().unwrap();
@@ -3682,18 +3698,27 @@ impl Gpu {
             if let Some(frame) = frame {
                 let view = frame.texture.create_view(&TextureViewDescriptor::default());
                 self.use_tex(id);
+                let probe = *crate::gpu_probe::ENABLED && crate::gpu_probe::selected(self.presents);
+                let color_test = *crate::gpu_probe::ENABLED && self.presents < 30;
+                if color_test && self.presents == 0 { crate::rebirth::logs::checkpoint("DISPLAY TEST: first 30 presents are magenta, not game imagery; then normal blit resumes",true); }
+                let dev = self.device.clone();
+                let before = if probe { crate::gpu_probe::encode(&dev,self.encoder(),&tex) } else { None };
                 {
                     let enc = self.encoder();
                     let mut p = enc.begin_render_pass(&RenderPassDescriptor {
                         label: None,
-                        color_attachments: &[Some(RenderPassColorAttachment { view: &view, depth_slice: None, resolve_target: None, ops: Operations { load: LoadOp::Clear(Color::BLACK), store: StoreOp::Store } })],
+                        color_attachments: &[Some(RenderPassColorAttachment { view: &view, depth_slice: None, resolve_target: None, ops: Operations { load: LoadOp::Clear(if color_test {Color{r:1.0,g:0.0,b:1.0,a:1.0}} else {Color::BLACK}), store: StoreOp::Store } })],
                         depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
                     });
+                    if !color_test {
                     p.set_pipeline(&blit);
                     p.set_bind_group(0, &bg, &[]);
                     p.draw(0..3, 0..1);
+                    }
                 }
+                let after = if probe {crate::gpu_probe::encode(&dev,self.encoder(),&frame.texture)} else {None};
                 self.flush();
+                if probe {crate::gpu_probe::finish(before,0,self.presents);crate::gpu_probe::finish(after,1,self.presents);}
                 self.queue.present(frame);
                 if crate::startup::SURFACE_PRESENTS.fetch_add(1, Ordering::Relaxed) == 0 { crate::rebirth::logs::checkpoint("first surface queue.present returned; actual drawable completion and gameplay UNKNOWN", true); }
             } else {

@@ -60,11 +60,30 @@ public func muguetShowLauncher(_ viewController: UnsafeMutableRawPointer, _ done
     let parent = Unmanaged<UIViewController>.fromOpaque(viewController).takeUnretainedValue()
     weak var sheet: UIViewController?
     let host = UIHostingController(rootView: LauncherView(play: {
-        sheet?.dismiss(animated: true)
-        done()
+        let probe=UserDefaults.standard.bool(forKey:"rebirth.displayProbe")
+        setenv("MUGUET_DISPLAY_PROBE",probe ? "1" : "0",1)
+        sheet?.dismiss(animated: false, completion: {
+            done()
+            if probe {DispatchQueue.main.asyncAfter(deadline:.now()+1) {inspectGameVisibility(parent)}}
+        })
     }))
     sheet = host
     host.modalPresentationStyle = .fullScreen
     host.isModalInPresentation = true
     parent.present(host, animated: false)
+}
+
+// Main-thread, one-shot visibility evidence; no private APIs or per-frame traversal.
+private func inspectGameVisibility(_ parent:UIViewController) {
+    var count=0
+    func visit(_ v:UIView,_ hidden:Bool,_ alpha:CGFloat) {
+        let h=hidden || v.isHidden;let a=alpha*v.alpha
+        if v.layer is CAMetalLayer {
+            count += 1
+            print("[display] CAMetalLayer hidden=\(h) effectiveAlpha=\(a) windowAttached=\(v.window != nil) frame=\(v.convert(v.bounds,to:nil)) layerHidden=\(v.layer.isHidden) layerOpacity=\(v.layer.opacity)")
+        }
+        for c in v.subviews {visit(c,h,a)}
+    }
+    visit(parent.view,false,1)
+    print("[display] metalViews=\(count) presentedController=\(String(describing:parent.presentedViewController)) windowHidden=\(parent.view.window?.isHidden ?? true); visibility inspection is not pixel/display proof")
 }

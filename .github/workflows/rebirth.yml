@@ -32,7 +32,7 @@ jobs:
           swiftc ios/RebirthSettings.swift tests/RebirthSettingsTests.swift -o evidence/local/settings-tests
           evidence/local/settings-tests | tee evidence/local/swift-settings.log
           cargo +1.98.1 test --locked --manifest-path tools/Cargo.toml --release 2>&1 | tee evidence/local/adapters.log
-          cargo +1.98.1 test --locked --release --bin muguet 2>&1 | tee evidence/local/upstream-tests.log
+          cargo +1.98.1 test --locked --release --bin muguet -- --nocapture 2>&1 | tee evidence/local/upstream-tests.log
       - name: Actual Swift launcher simulator previews
         run: python3 tools/preview-ios.py
       - name: Original module and actual Muguet host initialization
