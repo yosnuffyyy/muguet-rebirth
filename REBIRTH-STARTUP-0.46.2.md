@@ -42,4 +42,16 @@ Install over the existing bundle without deleting data. Test clean/repeated laun
 
 If it closes, export the next-launch retained log and the matching Settings > Privacy & Security > Analytics & Improvements > Analytics Data crash/Jetsam report, matched by timestamp/build/UUID. No matching OS termination report is currently available. A still-alive app with increasing heartbeat timestamps but stationary progress counters indicates a stall requiring further investigation; do not label it jetsam.
 
-Validation/build identity will be recorded from CI after completion. No physical iPhone success is claimed here.
+## Verified build and tests
+
+Executable revision: 8cb11d7aaac06428cfdc1972d58b4be491db19f7. CI: https://github.com/yosnuffyyy/muguet-rebirth/actions/runs/39692072406 — success.
+
+13 adapter unit tests, 4 archive integration tests, 17 complete-host unit tests (including shared adapter cases), 20 Swift settings assertions and 2 entitlement tests passed. Original TLS/constructors and both actual tagged instruction sequences passed; real Wasmtime host import dispatch passed all mode/resolution/republication/key-release and invalid-pointer checks. Launcher simulator previews passed. ARM64 no-JIT link, original AOT link, codesign verification and both signature entitlements passed. Local full ZIP CRC, hash, ARM64 header and bundle/version checks passed. No sanitizer run or physical iPhone gameplay test was performed in this change.
+
+IPA: GTA-Rebirth-0.46.2-8cb11d7aaac0-unsigned.ipa (build 48), 63,144,779 bytes.
+SHA256: 538f63892dcc0ae64a3aea4fe1c36e9baa6e586e28a7f12c885a3dafcf30a16a
+Mach-O UUID: 3825EE87-3B20-36DD-8BEC-4A202FB7379F
+
+Previous IPAs preserved. Encrypted IPA and non-asset build evidence are in CI; decrypted IPA is in the approved local output directory. No new physical PRESENT/display, playable Story/Sandbox, audible sound, RAM grant or performance result is claimed.
+
+Source-based observation: the supplied surface-configured lines occur inside the PRESENT handler, so the snapshots already reached PRESENT processing. They still do not establish successful surface presentation or visible frames.

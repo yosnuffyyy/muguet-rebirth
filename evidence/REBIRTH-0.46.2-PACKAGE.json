@@ -1,0 +1,27 @@
+{
+  "version": "0.46.2",
+  "build": "48",
+  "bundle": "io.github.yosnuffyyy.gtanativeprobe",
+  "source": "8cb11d7aaac06428cfdc1972d58b4be491db19f7",
+  "upstream": "1b4600b052b864c78fe36180073ff406663b7e0b",
+  "ipa": "GTA-Rebirth-0.46.2-8cb11d7aaac0-unsigned.ipa",
+  "bytes": 63144779,
+  "sha256": "538f63892dcc0ae64a3aea4fe1c36e9baa6e586e28a7f12c885a3dafcf30a16a",
+  "signing": "ad-hoc; requires user signing for installation",
+  "phone_verified": false,
+  "ci": "https://github.com/yosnuffyyy/muguet-rebirth/actions/runs/39692072406",
+  "ci_result": "success",
+  "mach_o_uuid": "3825EE87-3B20-36DD-8BEC-4A202FB7379F",
+  "signed_entitlements": {
+    "com.apple.developer.kernel.extended-virtual-addressing": true,
+    "com.apple.developer.kernel.increased-memory-limit": true
+  },
+  "tests": {
+    "adapter_unit": 13,
+    "archive_integration": 4,
+    "complete_host_unit": 17,
+    "swift_assertions": 20,
+    "entitlement_tests": 2,
+    "original_signed_input_dispatch": "pass; host-only, not gameplay"
+  }
+}
