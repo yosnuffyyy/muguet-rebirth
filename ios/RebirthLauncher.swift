@@ -58,14 +58,14 @@ struct LauncherView:View {
                     }.padding(22).frame(maxWidth:900,alignment:.leading)}
                 }
                 Divider()
-                HStack(spacing:16){VStack(alignment:.leading){Text(s.mode==1 ? "STORY MODE" : "SANDBOX MODE").font(.caption.bold());Text("\(s.preset) · \(s.resolution) · \(s.fps) FPS cap").font(.caption).foregroundStyle(.secondary)};Spacer();Button(action:start){Label("PLAY",systemImage:"play.fill").font(.headline).foregroundStyle(.black).padding(.horizontal,35).frame(minHeight:48).background(gold,in:RoundedRectangle(cornerRadius:10))}.buttonStyle(.plain).disabled(folder.url==nil || !hasGameCode()).opacity(folder.url==nil || !hasGameCode() ? 0.45:1)}.padding(.horizontal,22).padding(.vertical,12)
+                HStack(spacing:16){VStack(alignment:.leading){Text(s.mode==1 ? "STORY MODE" : "SANDBOX MODE").font(.caption.bold());Text("\(s.preset) · \(s.resolution) · \(s.fps) FPS cap").font(.caption).foregroundStyle(.secondary)};Spacer();Button(action:start){Label("PLAY",systemImage:"play.fill").font(.headline).foregroundStyle(.black).padding(.horizontal,35).frame(minHeight:48).background(gold,in:RoundedRectangle(cornerRadius:10))}.buttonStyle(.plain).disabled(!loaded || folder.url==nil || !hasGameCode()).opacity(!loaded || folder.url==nil || !hasGameCode() ? 0.45:1)}.padding(.horizontal,22).padding(.vertical,12)
             }.background(Color(red:0.055,green:0.061,blue:0.068)).tint(gold).preferredColorScheme(.dark)
         }
         .onAppear{do{s=try RebirthStore.load();loaded=true}catch{self.error="Saved settings could not be read. Reset settings to recover."}}
         .onChange(of:s){value in guard loaded else{return};do{try RebirthStore.save(value)}catch{self.error=error.localizedDescription}}
         .fileImporter(isPresented:$picker,allowedContentTypes:[.folder]){result in do{try folder.select(result.get());error=nil}catch{self.error=error.localizedDescription}}
     }
-    @ViewBuilder private var navigation:some View {ForEach(LibraryPage.allCases,id:\.self){item in Button{page=item}{Label(item.rawValue,systemImage:item.icon).font(.subheadline.weight(page==item ? .semibold:.regular)).frame(maxWidth:.infinity,alignment:.leading).padding(11).background(page==item ? gold.opacity(0.13):.clear,in:RoundedRectangle(cornerRadius:8))}.buttonStyle(.plain).foregroundStyle(page==item ? gold:Color.white.opacity(0.75))}}
+    @ViewBuilder private var navigation:some View {ForEach(LibraryPage.allCases,id:\.self){item in Button{page=item} label:{Label(item.rawValue,systemImage:item.icon).font(.subheadline.weight(page==item ? .semibold:.regular)).frame(maxWidth:.infinity,alignment:.leading).padding(11).background(page==item ? gold.opacity(0.13):.clear,in:RoundedRectangle(cornerRadius:8))}.buttonStyle(.plain).foregroundStyle(page==item ? gold:Color.white.opacity(0.75))}}
     @ViewBuilder private var content:some View {
         switch page {
         case .home,.game:
@@ -88,7 +88,7 @@ struct LauncherView:View {
             choice("Anisotropic filtering",\RebirthSettings.anisotropy,[(0,"Off"),(2,"2×"),(4,"4×"),(8,"8×"),(16,"16×")])
             Toggle("Frame statistics",isOn:$s.show_fps)
             card("Unavailable pending validation","MSAA, higher or uncapped frame rates, native-display resolution and dynamic upscaling are not enabled. All graphics changes apply at the next clean launch.")
-        case .gameplay:slider("Ambient population",edit(\RebirthSettings.density),0...1);card("Separate progression","Story and Sandbox use their existing independent save directories. No saves are converted, reset or overwritten by this launcher.")
+        case .gameplay:slider("Ambient population",edit(\RebirthSettings.density),0...1);card("Separate progression","Story and Sandbox receive separate byte-verified Rebirth save copies. Legacy saves remain untouched for rollback. No save payload conversion is performed.")
         case .controls:slider("Touch look sensitivity",$s.touch_sensitivity,0.25...2);slider("Controller look sensitivity",$s.controller_sensitivity,0.25...2);card("Muguet controls","Native GameController and touch input remain upstream-owned. Additional deadzone, layout, invert-axis and switching preferences need integration testing before being exposed.")
         case .audio:slider("Master volume",$s.volume,0...1);Toggle("Mute",isOn:$s.mute);card("Native audio","Gain is applied to actual 48 kHz stereo PCM at the CoreAudio output. Muting still drains the ring. Dialogue/radio/effects bus controls are unavailable. Speaker playback requires device verification.")
         case .files:folderCard;card("Files stay where they are","Select your existing web folder. Archives and shader data are read in place; no ZIP import, download or replacement. The launcher validates the pinned original shader build before starting.")
@@ -103,14 +103,15 @@ struct LauncherView:View {
     private func quality(_ title:String,_ key:WritableKeyPath<RebirthSettings,Int>,_ maximum:Int)->some View{choice(title,key,(0...maximum).map{($0,["Normal","High","Very High","Ultra"][$0])})}
     private func slider(_ title:String,_ value:Binding<Double>,_ range:ClosedRange<Double>)->some View{VStack(alignment:.leading){HStack{Text(title);Spacer();Text(String(format:"%.2f",value.wrappedValue)).monospacedDigit()};Slider(value:value,in:range)}}
     private func start(){
-        guard let root=folder.url,hasGameCode() else{return}
+        guard loaded,let root=folder.url,hasGameCode() else{return}
         do {
+            try RebirthStore.save(s)
             let json=String(decoding:try JSONEncoder().encode(s),as:UTF8.self)
             let support=FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0]
             try FileManager.default.createDirectory(at:support,withIntermediateDirectories:true)
             let ok=root.path.withCString{r in json.withCString{j in support.path.withCString{p in prepareLaunch(r,j,p)}}}
             guard ok else{error=launchError().map{String(cString:$0)} ?? "Launch validation failed";return}
-            try RebirthStore.save(s);play()
+            play()
         }catch{self.error=error.localizedDescription}
     }
 }

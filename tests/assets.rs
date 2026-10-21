@@ -47,7 +47,7 @@ fn exact_bytes_bounded_reads_cache_eof_and_cancellation() {
     let stop = AtomicBool::new(false);
     let mut reader = Reader::open(&f.0).unwrap();
     let metadata = fs::metadata(f.0.join("data/0.rpf")).unwrap();
-    let stat = gta_muguet_runtime::abi::Stat64::from_metadata(&metadata);
+    let stat = rebirth_contract_tests::rebirth::abi::Stat64::from_metadata(&metadata);
     assert_eq!(stat.size, data.len() as u64);
     assert_eq!(stat.mode & 0o170000, 0o100000);
     assert_eq!(

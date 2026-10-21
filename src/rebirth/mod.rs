@@ -3,6 +3,7 @@ pub mod abi;
 pub mod assets;
 pub mod layout;
 pub mod settings;
+pub mod saves;
 use anyhow::{ensure, Context, Result};
 use std::path::{Path,PathBuf};
 use std::sync::OnceLock;
@@ -13,9 +14,7 @@ pub fn prepare(root:&Path,json:&[u8],support:&Path) -> Result<()> {
     ensure!(LAUNCH.get().is_none(),"this process already owns a launch; stop and reopen before changing runtime settings");
     let settings=settings::Settings::parse(json)?;
     let layout=layout::Layout::open(root)?;
-    let saves=support.join(assets::save_namespace(settings.mode)?);
-    // Preserve existing saves in place. Do not translate or copy save payloads.
-    std::fs::create_dir_all(&saves)?;
+    let saves=saves::prepare(support,settings.mode)?;
     LAUNCH.set(Launch {settings,layout,saves}).map_err(|_|anyhow::anyhow!("launch already frozen"))?;
     Ok(())
 }

@@ -16,7 +16,7 @@ pub fn data_dir() -> PathBuf {
 
 fn atomic_i32(mem: &SharedMemory, addr: u64) -> &AtomicI32 {
     let (base, len) = mem_base_len(mem);
-    assert!((addr as usize) + 4 <= len && addr % 4 == 0);
+    assert!(addr.checked_add(4).is_some_and(|end|end <= len as u64) && addr % 4 == 0);
     unsafe { &*(base.add(addr as usize) as *const AtomicI32) }
 }
 
@@ -33,6 +33,10 @@ pub fn start(mem: &SharedMemory, table: u64) {
 }
 
 fn serve_loop(mem: SharedMemory, table: u64) {
+    let (_, memory_bytes)=mem_base_len(&mem);
+    if table==0 || table%4!=0 || table.checked_add(64).is_none_or(|end|end>memory_bytes as u64) {
+        crate::host::report_fatal("invalid asset request table header".into());return;
+    }
     let mut reader = match crate::rebirth::assets::Reader::open_data(&data_dir()) {
         Ok(r) => r,
         Err(e) => { crate::host::report_fatal(format!("asset reader: {e:#}")); return; }
@@ -43,8 +47,8 @@ fn serve_loop(mem: SharedMemory, table: u64) {
         let seen = atomic_i32(&mem, table).load(Ordering::SeqCst);
         let raw_n = atomic_i32(&mem, table + 4).load(Ordering::SeqCst);
         let n = raw_n.max(0) as u64;
-        let (_, bytes) = mem_base_len(&mem);
-        if raw_n < 0 || table.checked_add(64 + n * 64).is_none_or(|end| end > bytes as u64) {
+        let (_, memory_bytes) = mem_base_len(&mem);
+        if raw_n < 0 || table.checked_add(64 + n * 64).is_none_or(|end| end > memory_bytes as u64) {
             crate::host::report_fatal("asset request table outside guest memory".into()); return;
         }
         for slot in 0..n {

@@ -163,7 +163,6 @@ mod unix {
         /// The root is the existing selected web folder, already authorized by
         /// UIKit's security-scoped bookmark. This layer never modifies it.
         pub fn open(root: &Path) -> Result<Self> {
-            use std::os::unix::fs::OpenOptionsExt;
             Self::open_data(&root.join("data"))
         }
         pub fn open_data(root: &Path) -> Result<Self> {
