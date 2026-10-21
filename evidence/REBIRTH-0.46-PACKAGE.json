@@ -1,0 +1,46 @@
+{
+  "package": {
+    "version": "0.46.0",
+    "build": "46",
+    "bundle": "io.github.yosnuffyyy.gtanativeprobe",
+    "source": "870500c8901198a09df8bbc10178c51b3f7e0c52",
+    "upstream": "1b4600b052b864c78fe36180073ff406663b7e0b",
+    "ipa": "GTA-Rebirth-0.46.0-870500c89011-unsigned.ipa",
+    "bytes": 63132234,
+    "sha256": "af433956d781507e66a59e81e26b582cc544c97877ef6c5605c737e09f3b523b",
+    "signing": "ad-hoc; requires user signing for installation",
+    "phone_verified": false
+  },
+  "inspection": {
+    "result": "PASS",
+    "source": "870500c8901198a09df8bbc10178c51b3f7e0c52",
+    "sha256": "af433956d781507e66a59e81e26b582cc544c97877ef6c5605c737e09f3b523b",
+    "ipa_bytes": 63132234,
+    "architecture": "ARM64",
+    "uuid": "B0198EED-9808-3EC4-92DF-A53FA8657088",
+    "game_segment": {
+      "name": "__GAME",
+      "bytes": 158433280,
+      "protection": 5
+    },
+    "png_icons": [
+      "Payload/GTA-Rebirth.app/AppIcon60x60@2x.png",
+      "Payload/GTA-Rebirth.app/AppIcon76x76@2x~ipad.png"
+    ],
+    "bundle": "io.github.yosnuffyyy.gtanativeprobe",
+    "version": "0.46.0",
+    "build": "46",
+    "asset_catalog": true,
+    "zip_integrity": true,
+    "physical_device_verified": false
+  },
+  "ci_run": 39685241424,
+  "ci_result": "success",
+  "tests": {
+    "adapter_unit": 9,
+    "unix_archive": 4,
+    "host_unit_including_shared": 13,
+    "swift_assertions": 20
+  },
+  "physical_device_verified": false
+}
