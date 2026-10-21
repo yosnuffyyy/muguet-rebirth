@@ -125,6 +125,47 @@ mod unix {
         pub opens: u64,
         pub cache_hits: u64,
     }
+    fn case_name(parent: &File, part: &str) -> Result<CString> {
+        // Only invoked after ENOENT. Enumerate this one authorized directory,
+        // not the game tree; the resulting opened archive is cached by file ID.
+        let dot = CString::new(".").unwrap();
+        let fd = unsafe {
+            libc::openat(
+                parent.as_raw_fd(),
+                dot.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+            )
+        };
+        ensure!(fd >= 0, "cannot inspect asset directory");
+        let dir = unsafe { libc::fdopendir(fd) };
+        if dir.is_null() {
+            unsafe { libc::close(fd) };
+            bail!("cannot enumerate asset directory");
+        }
+        struct Directory(*mut libc::DIR);
+        impl Drop for Directory {
+            fn drop(&mut self) {
+                unsafe { libc::closedir(self.0) };
+            }
+        }
+        let dir = Directory(dir);
+        let mut found = None;
+        let mut count = 0;
+        loop {
+            let e = unsafe { libc::readdir(dir.0) };
+            if e.is_null() {
+                break;
+            }
+            count += 1;
+            ensure!(count <= 20_000, "asset directory exceeds entry bound");
+            let name = unsafe { std::ffi::CStr::from_ptr((*e).d_name.as_ptr()) };
+            if name.to_bytes().eq_ignore_ascii_case(part.as_bytes()) {
+                ensure!(found.is_none(), "ambiguous physical asset path component");
+                found = Some(name.to_owned());
+            }
+        }
+        found.context("asset path component missing")
+    }
     fn relative(root: &File, path: &str, directory: bool) -> Result<File> {
         ensure!(valid_path(path), "invalid relative path");
         let mut parent = None::<File>;
@@ -140,13 +181,23 @@ mod unix {
                     libc::O_NONBLOCK
                 };
             // Directory-descriptor walk prevents symlink/rename escape races.
-            let fd = unsafe {
+            let mut fd = unsafe {
                 libc::openat(
                     parent.as_ref().unwrap_or(root).as_raw_fd(),
                     name.as_ptr(),
                     flags,
                 )
             };
+            if fd < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ENOENT) {
+                let matched = case_name(parent.as_ref().unwrap_or(root), part)?;
+                fd = unsafe {
+                    libc::openat(
+                        parent.as_ref().unwrap_or(root).as_raw_fd(),
+                        matched.as_ptr(),
+                        flags,
+                    )
+                };
+            }
             if fd < 0 {
                 return Err(std::io::Error::last_os_error().into());
             }

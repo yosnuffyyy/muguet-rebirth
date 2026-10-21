@@ -151,3 +151,25 @@ fn missing_truncated_symlink_and_replacement() {
         .read(4, 0, 3, &stop, |_| Ok(()))
         .is_err());
 }
+
+#[test]
+fn physical_case_mapping_preserves_manifest_file_ids() {
+    let f = Fixture::new();
+    fs::create_dir(f.0.join("data/UPPER")).unwrap();
+    fs::write(f.0.join("data/UPPER/MiXeD.RPF"), b"real bytes").unwrap();
+    f.manifest(serde_json::json!([["upper/mixed.rpf", 10, 0]]));
+    let mut r = Reader::open(&f.0).unwrap();
+    let stop = AtomicBool::new(false);
+    r.read(0, 0, 10, &stop, |bytes| {
+        assert_eq!(bytes, b"real bytes");
+        Ok(())
+    })
+    .unwrap();
+    r.read(0, 2, 4, &stop, |bytes| {
+        assert_eq!(bytes, b"al b");
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(r.opens, 1);
+    assert_eq!(r.cache_hits, 1);
+}

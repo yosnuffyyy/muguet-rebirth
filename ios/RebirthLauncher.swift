@@ -5,6 +5,8 @@ import UniformTypeIdentifiers
 
 @_silgen_name("rebirth_prepare") private func prepareLaunch(_ root:UnsafePointer<CChar>,_ json:UnsafePointer<CChar>,_ saves:UnsafePointer<CChar>)->Bool
 @_silgen_name("rebirth_error") private func launchError()->UnsafePointer<CChar>?
+@_silgen_name("rebirth_logs_start") private func startLogs(_ root:UnsafePointer<CChar>)->Bool
+@_silgen_name("rebirth_logs_export") private func exportLogs(_ root:UnsafePointer<CChar>)->UnsafePointer<CChar>?
 @_silgen_name("muguet_has_game_code") private func hasGameCode()->Bool
 
 final class SelectedFolder: ObservableObject {
@@ -43,8 +45,11 @@ struct LauncherView:View {
     @State private var error:String?
     @State private var loaded=false
     @State private var starting=false
+    @State private var exporting=false
+    @State private var sharedLog:SharedLog?
     @ObservedObject private var folder=SelectedFolder.shared
     let play:()->Void
+    init(initialPage:LibraryPage = .home,play:@escaping()->Void){_page=State(initialValue:initialPage);self.play=play}
     private let gold=Color(red:0.97,green:0.76,blue:0.20)
     var body:some View {
         GeometryReader { geometry in
@@ -62,8 +67,9 @@ struct LauncherView:View {
                 HStack(spacing:16){VStack(alignment:.leading){Text(s.mode==1 ? "STORY MODE" : "SANDBOX MODE").font(.caption.bold());Text("\(s.preset) · \(s.resolution) · \(s.fps) FPS cap").font(.caption).foregroundStyle(.secondary)};Spacer();Button(action:start){Label(starting ? "PREPARING" : "PLAY",systemImage:"play.fill").font(.headline).foregroundStyle(.black).padding(.horizontal,35).frame(minHeight:48).background(gold,in:RoundedRectangle(cornerRadius:10))}.buttonStyle(.plain).disabled(!loaded || folder.url==nil || !hasGameCode()).opacity(!loaded || folder.url==nil || !hasGameCode() ? 0.45:1)}.padding(.horizontal,22).padding(.vertical,12)
             }.background(Color(red:0.055,green:0.061,blue:0.068)).tint(gold).preferredColorScheme(.dark)
         }
-        .onAppear{do{s=try RebirthStore.load();loaded=true}catch{self.error="Saved settings could not be read. Reset settings to recover."}}
+        .onAppear{do{let support=FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0];let logRoot=support.appendingPathComponent("RebirthLogs");if !logRoot.path.withCString({startLogs($0)}){error=launchError().map{String(cString:$0)}};s=try RebirthStore.load();loaded=true}catch{self.error="Saved settings could not be read. Reset settings to recover."}}
         .onChange(of:s){value in guard loaded else{return};do{try RebirthStore.save(value)}catch{self.error=error.localizedDescription}}
+        .sheet(item:$sharedLog){log in LogShare(url:log.url)}
         .disabled(starting)
         .fileImporter(isPresented:$picker,allowedContentTypes:[.folder]){result in do{try folder.select(result.get());error=nil}catch{self.error=error.localizedDescription}}
     }
@@ -95,7 +101,7 @@ struct LauncherView:View {
         case .audio:slider("Master volume",$s.volume,0...1);Toggle("Mute",isOn:$s.mute);card("Native audio","Gain is applied to actual 48 kHz stereo PCM at the CoreAudio output. Muting still drains the ring. Dialogue/radio/effects bus controls are unavailable. Speaker playback requires device verification.")
         case .files:folderCard;card("Files stay where they are","Select your existing web folder. Archives and shader data are read in place; no ZIP import, download or replacement. The launcher validates the pinned original shader build before starting.")
         case .advanced:card("Execution architecture","Muguet Rust host, Wasmtime AOT and wgpu 30 Metal. This fork does not contain selectable legacy wasm2c, Renderer V2 or CPU Core V2 paths.");card("Offline","Multiplayer is disabled for this migration milestone.");Button("Reset Settings"){s=RebirthSettings();loaded=true;error=nil;try? RebirthStore.save(s)}.buttonStyle(.bordered)
-        case .diagnostics:card("Validation status","Source and host tests do not prove iPhone gameplay. Exact upstream/source revisions and validation results accompany each build.");card("Session reports","Muguet logging remains active. Persistent shared TXT reports and previous-session recovery are not yet integrated into this fork.");Text("Upstream 1b4600b · Rebirth development milestone").font(.caption.monospaced())
+        case .diagnostics:card("Validation status","Source and host tests do not prove iPhone gameplay. Exact upstream/source revisions and validation results accompany each build.");card("Session reports","Share a TXT snapshot of Muguet's engine and runtime logs. Retention is bounded at 256 MiB across launches; older text is rotated. Original game assets are excluded.");Button(exporting ? "Preparing report…" : "Share TXT Report",action:shareLogs).buttonStyle(.bordered).disabled(exporting);Text("Upstream 1b4600b · Rebirth development milestone").font(.caption.monospaced())
         }
     }
     private var folderCard:some View{VStack(alignment:.leading,spacing:8){Text("GAME FILES").font(.caption.bold()).foregroundStyle(gold);Text(folder.url?.lastPathComponent ?? "No folder selected").font(.headline);if let e=folder.error{Text(e).foregroundStyle(.red)};Text("Permission restored does not imply all assets are present.").font(.caption).foregroundStyle(.secondary);Button("Select / Change Folder"){picker=true}.buttonStyle(.bordered)}.frame(maxWidth:.infinity,alignment:.leading).padding(16).background(Color.white.opacity(0.04),in:RoundedRectangle(cornerRadius:12))}
@@ -104,6 +110,15 @@ struct LauncherView:View {
     private func choice(_ title:String,_ key:WritableKeyPath<RebirthSettings,Int>,_ values:[(Int,String)])->some View{Picker(title,selection:edit(key)){ForEach(values,id:\.0){Text($0.1).tag($0.0)}}}
     private func quality(_ title:String,_ key:WritableKeyPath<RebirthSettings,Int>,_ maximum:Int)->some View{choice(title,key,(0...maximum).map{($0,["Normal","High","Very High","Ultra"][$0])})}
     private func slider(_ title:String,_ value:Binding<Double>,_ range:ClosedRange<Double>)->some View{VStack(alignment:.leading){HStack{Text(title);Spacer();Text(String(format:"%.2f",value.wrappedValue)).monospacedDigit()};Slider(value:value,in:range)}}
+    private func shareLogs(){
+        guard !exporting else{return};exporting=true
+        let root=FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].appendingPathComponent("RebirthExports").path
+        DispatchQueue.global(qos:.utility).async {
+            let path=root.withCString{exportLogs($0)}.map{String(cString:$0)}
+            let message=path == nil ? launchError().map{String(cString:$0)} : nil
+            DispatchQueue.main.async {exporting=false;if let path{sharedLog=SharedLog(url:URL(fileURLWithPath:path))}else{error=message ?? "Report export failed"}}
+        }
+    }
     private func start(){
         guard loaded,let root=folder.url,hasGameCode() else{return}
         do {
@@ -120,4 +135,11 @@ struct LauncherView:View {
             }
         }catch{self.error=error.localizedDescription}
     }
+}
+
+private struct SharedLog:Identifiable {let id=UUID();let url:URL}
+private struct LogShare:UIViewControllerRepresentable {
+    let url:URL
+    func makeUIViewController(context:Context)->UIActivityViewController {UIActivityViewController(activityItems:[url],applicationActivities:nil)}
+    func updateUIViewController(_ controller:UIActivityViewController,context:Context){}
 }
