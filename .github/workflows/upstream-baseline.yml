@@ -1,0 +1,48 @@
+name: Rebirth upstream baseline
+on:
+  push:
+    branches: [native-ios-prototype]
+    paths: ['.github/workflows/upstream-baseline.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  upstream:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: c22dev/muguet
+          ref: 1b4600b052b864c78fe36180073ff406663b7e0b
+      - name: Pin toolchain
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal
+          rustup target add aarch64-apple-ios --toolchain 1.98.1
+          command -v xcodegen || brew install xcodegen
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rebirth-upstream-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+      - name: Unmodified upstream host tests
+        run: |
+          set -o pipefail
+          mkdir -p evidence
+          git rev-parse HEAD > evidence/upstream.txt
+          cargo +1.98.1 test --locked --release --bin muguet 2>&1 | tee evidence/upstream-tests.log
+      - name: Unmodified upstream iOS link (no game assets)
+        run: |
+          set -o pipefail
+          IPHONEOS_DEPLOYMENT_TARGET=15.0 cargo +1.98.1 build --locked --release --no-default-features --target aarch64-apple-ios --bin muguet 2>&1 | tee evidence/upstream-ios.log
+          cargo +1.98.1 tree --locked --no-default-features --target aarch64-apple-ios > evidence/ios-dependencies.txt
+          xcrun dwarfdump --uuid target/aarch64-apple-ios/release/muguet > evidence/ios-uuid.txt
+          xcrun otool -L target/aarch64-apple-ios/release/muguet > evidence/ios-libraries.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: upstream-baseline-evidence
+          path: evidence/
+          retention-days: 30
