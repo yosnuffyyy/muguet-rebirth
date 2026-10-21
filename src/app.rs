@@ -10,7 +10,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{ModifiersState, PhysicalKey};
 use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
 
-const TITLE: &str = "Muguet";
+const TITLE: &str = "GTA V (Test Build)";
 const PICK_TITLE: &str = "Muguet — loading: press Enter for Story Mode, or Space then 5 for Sandbox";
 
 struct App {
@@ -162,7 +162,7 @@ impl ApplicationHandler for App {
 
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
         #[allow(unused_mut)]
-        let mut wait = if crate::pad::poll() { 8 } else if cfg!(target_os = "ios") { 250 } else { 1000 };
+        let mut wait = if self.started && crate::pad::poll() { 8 } else if cfg!(target_os = "ios") { 250 } else { 1000 };
         #[cfg(target_os = "ios")]
         if crate::touch::refresh() { wait = 15; }
         #[cfg(target_os = "ios")]
@@ -239,7 +239,7 @@ impl App {
             }
         }
         if PLAY.load(Ordering::SeqCst) {
-            let settings = crate::config::reload();
+            let settings = match crate::config::reload() { Ok(s)=>s, Err(e)=>{eprintln!("[rebirth] launch rejected: {e:#}"); PLAY.store(false,Ordering::SeqCst); return;} };
             let (limit, entitled) = unsafe { (muguet_memory_limit(), muguet_memory_entitled()) };
             eprintln!("[host] iOS gives the game {} MB, increased memory limit entitlement: {}", limit >> 20, match entitled { 1 => "yes", 0 => "no", _ => "unknown" });
             let uncapped = settings.iter().any(|a| a == "-frameLimit=0");

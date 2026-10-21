@@ -11,7 +11,7 @@ static CALLBACKS: AtomicU64 = AtomicU64::new(0);
 static STARTED: AtomicBool = AtomicBool::new(false);
 
 pub fn start(ring: u64, capacity: u32) {
-    if STARTED.swap(true, Ordering::SeqCst) || std::env::var("MUGUET_MUTE").is_ok() {
+    if STARTED.swap(true, Ordering::SeqCst) {
         return;
     }
 
@@ -32,7 +32,10 @@ fn play(ring: u64, capacity: u32) -> anyhow::Result<cpal::Stream> {
     let host = cpal::default_host();
     let device = host.default_output_device().ok_or_else(|| anyhow::anyhow!("no default output device"))?;
     let config = cpal::StreamConfig { channels: 2, sample_rate: 48000, buffer_size: cpal::BufferSize::Default };
-    let (base, _) = crate::mem_base_len(&RT.get().unwrap().mem);
+    let (base, bytes) = crate::mem_base_len(&RT.get().unwrap().mem);
+    anyhow::ensure!(ring != 0 && ring % 4 == 0 && capacity.is_power_of_two() && capacity <= (1 << 20), "invalid PCM ring descriptor");
+    anyhow::ensure!(ring.checked_add(64 + capacity as u64 * 8).is_some_and(|end|end <= bytes as u64), "PCM ring outside guest memory");
+    let gain = crate::rebirth::current().map_or(1.0, |l| if l.settings.mute {0.0} else {l.settings.volume as f32});
     let base = base as usize;
     let hdr = move |i: usize| -> &'static AtomicI32 { unsafe { &*((base + ring as usize + 4 * i) as *const AtomicI32) } };
     let data = base + ring as usize + 64;
@@ -48,8 +51,8 @@ fn play(ring: u64, capacity: u32) -> anyhow::Result<cpal::Stream> {
                 let at = ((read.wrapping_add(i as u32) & mask) * 2) as usize;
                 unsafe {
                     let p = (data as *const f32).add(at);
-                    out[2 * i] = *p;
-                    out[2 * i + 1] = *p.add(1);
+                    out[2 * i] = *p * gain;
+                    out[2 * i + 1] = *p.add(1) * gain;
                 }
             }
             for s in &mut out[take * 2..] { *s = 0.0; }

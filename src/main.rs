@@ -1,6 +1,7 @@
 // muguet - main.rs
 // Constantin Clerc (c22dev) - 0.1
 
+mod rebirth;
 mod app;
 mod audio;
 mod config;
@@ -161,6 +162,23 @@ fn main() -> Result<()> {
     raise_open_file_limit();
     heapcheck::start();
     let argv: Vec<String> = std::env::args().collect();
+
+    #[cfg(feature = "jit")]
+    if argv.get(1).map(String::as_str) == Some("--rebirth-verify-engine") {
+        let wasm = argv.get(2).context("--rebirth-verify-engine <verified-original.wasm> <cache>")?;
+        let cache = std::path::PathBuf::from(argv.get(3).context("cache directory required")?);
+        std::fs::create_dir_all(&cache)?;
+        let startup = config::Startup {wasm_path: wasm.into(),cache_dir:cache,engine_args:Vec::new()};
+        let rt = make_runtime(&startup)?;
+        anyhow::ensure!(!rt.mem.ty().is_64() && rt.mem.ty().minimum()==8192 && rt.mem.ty().maximum()==Some(65536), "original memory ABI mismatch");
+        eprintln!("[rebirth-check] full original module patched and compiled; {} typed imports, wasm32 shared/i64-pointer ABI",rt.imports.len());
+        let (mut store, inst) = instantiate(&rt, 0)?;
+        eprintln!("[rebirth-check] actual Muguet host instantiated original module");
+        call_export(&mut store, &inst, "_emscripten_tls_init", &[])?;
+        call_export(&mut store, &inst, "__wasm_call_ctors", &[])?;
+        eprintln!("[rebirth-check] original TLS and constructors completed; world/main/GPU not started");
+        return Ok(());
+    }
 
     if argv.get(1).map(String::as_str) == Some("--import") {
         let zip = argv.get(2).context("--import <game.zip>")?;

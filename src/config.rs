@@ -88,6 +88,7 @@ fn redirect_logs_if_detached() {
 }
 
 pub fn setup() -> anyhow::Result<Startup> {
+    if cfg!(target_os = "ios") { return Ok(Startup {wasm_path: PathBuf::new(),cache_dir:support_dir(),engine_args:Vec::new()}); }
     redirect_logs_if_detached();
     let support = support_dir();
     std::fs::create_dir_all(support.join("saves"))?;
@@ -119,15 +120,7 @@ fn locate() -> anyhow::Result<PathBuf> {
 const SETTING_VARS: &[&str] = &["MUGUET_SCALE", "MUGUET_MOUSE_SENS", "MUGUET_TOUCH_SENS", "MUGUET_RES", "MUGUET_FULLSCREEN", "MUGUET_MUTE", "MUGUET_HOST", "MUGUET_SERVER", "MUGUET_NAME", "MUGUET_SHOW_FPS"];
 
 #[cfg(target_os = "ios")]
-pub fn reload() -> Vec<String> {
-    for v in SETTING_VARS { std::env::remove_var(v); }
-    let args = settings(&support_dir().join("config.json"));
-    if let Err(e) = locate() {
-        eprintln!("[config] {e:#}");
-    }
-    eprintln!("[config] launcher settings applied: {}", args.join(" "));
-    args
-}
+pub fn reload() -> anyhow::Result<Vec<String>> { crate::rebirth::apply() }
 
 fn settings(cfg_path: &Path) -> Vec<String> {
     let _ = SETTING_VARS;

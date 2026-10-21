@@ -36,6 +36,12 @@ pub fn engine_stopped() -> bool {
     !STOPPED.swap(true, Ordering::Relaxed)
 }
 
+pub fn report_fatal(reason: String) {
+    let mut fatal = FATAL.lock().unwrap();
+    if fatal.is_none() { *fatal = Some(reason); }
+    STOPPED.store(true, Ordering::Release);
+}
+
 pub fn stop_reason() -> Option<String> {
     STOPPED.load(Ordering::Relaxed).then(|| FATAL.lock().unwrap().clone().unwrap_or_else(|| "A game thread stopped with an error.".into()))
 }
@@ -168,7 +174,7 @@ pub fn call(mut caller: Caller<'_, HostState>, idx: usize, params: &[Val], resul
         }
         "_abort_js" => anyhow::bail!("engine called abort()"),
         "emscripten_num_logical_cores" => set_int(results, std::thread::available_parallelism().map(|n| n.get() as i64).unwrap_or(8)),
-        "emscripten_get_heap_max" => set_int(results, 17_179_869_184),
+        "emscripten_get_heap_max" => set_int(results, (mem.ty().maximum().unwrap_or(mem.size()) << mem.ty().page_size_log2()) as i64),
         "emscripten_resize_heap" => set_int(results, resize_heap(mem, int(params, 0) as u64) as i64),
         "_emscripten_system" => set_int(results, if int(params, 0) == 0 { 0 } else { -52 }),
         "emscripten_stack_snapshot" | "emscripten_stack_unwind_buffer" => set_int(results, 0),

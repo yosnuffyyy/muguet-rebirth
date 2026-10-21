@@ -1,0 +1,56 @@
+name: Rebirth integration
+on:
+  push:
+    branches: [native-ios-prototype]
+    paths: ['src/**', 'ios/**', 'tools/**', 'tests/**', 'Cargo.*', 'build.rs', '.github/workflows/rebirth.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  integration:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Pin compiler
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal
+          rustup target add aarch64-apple-ios --toolchain 1.98.1
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rebirth-integration-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: rebirth-upstream-v1-${{ runner.os }}-${{ runner.arch }}-
+      - name: Adapter and complete upstream host tests
+        run: |
+          set -o pipefail
+          mkdir -p evidence/local
+          cargo +1.98.1 test --locked --manifest-path tools/Cargo.toml --release 2>&1 | tee evidence/local/adapters.log
+          cargo +1.98.1 test --locked --release --bin muguet 2>&1 | tee evidence/local/upstream-tests.log
+      - name: Original module and actual Muguet host initialization
+        run: |
+          set -o pipefail
+          node tools/original-engine.mjs evidence/local/original.wasm | tee evidence/local/original-identity.json
+          cargo +1.98.1 build --release --locked --bin muguet
+          MUGUET_FSROOT="$PWD/evidence/local/probe-saves" python3 tools/run-bounded.py 180 target/release/muguet --rebirth-verify-engine evidence/local/original.wasm evidence/local/cache 2>&1 | tee evidence/local/engine-initialization.log
+      - name: Compiler-free iOS build and dependency evidence
+        if: ${{ !cancelled() }}
+        run: |
+          set -o pipefail
+          IPHONEOS_DEPLOYMENT_TARGET=15.0 cargo +1.98.1 build --locked --release --no-default-features --target aarch64-apple-ios --bin muguet 2>&1 | tee evidence/local/ios-build.log
+          cargo +1.98.1 tree --locked --no-default-features --target aarch64-apple-ios > evidence/local/ios-dependencies.txt
+          if grep -E 'cranelift-codegen |wasmtime-internal-cranelift |wgpu-native|wasm2c' evidence/local/ios-dependencies.txt; then exit 1; fi
+          xcrun dwarfdump --uuid target/aarch64-apple-ios/release/muguet > evidence/local/ios-uuid.txt
+          xcrun otool -L target/aarch64-apple-ios/release/muguet > evidence/local/ios-libraries.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: rebirth-integration-evidence
+          path: |
+            evidence/local/*.log
+            evidence/local/*.json
+            evidence/local/*.txt
+          retention-days: 30

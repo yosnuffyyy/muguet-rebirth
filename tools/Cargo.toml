@@ -1,0 +1,15 @@
+[package]
+name = "rebirth-contract-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+[lib]
+path = "lib.rs"
+[[test]]
+name = "assets"
+path = "../tests/assets.rs"
+[dependencies]
+anyhow = "=1.0.102"
+serde = { version = "1", features = ["derive"] }
+serde_json = "=1.0.151"
+libc = "0.2"

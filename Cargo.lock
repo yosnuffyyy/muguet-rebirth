@@ -1370,6 +1370,7 @@ dependencies = [
  "pollster",
  "regex",
  "rustc-hash 2.1.3",
+ "serde",
  "serde_json",
  "wasm-encoder",
  "wasmparser",

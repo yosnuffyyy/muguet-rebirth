@@ -83,19 +83,10 @@ fn host_path(fs: &Fs, guest: &str) -> PathBuf {
 
 fn write_stat(mem: &SharedMemory, buf: u64, md: &fs::Metadata, chr: bool) {
     let mode = if chr { S_IFCHR | 0o666 } else if md.is_dir() { S_IFDIR | 0o777 } else { S_IFREG | 0o666 };
-    let mut b = [0u8; 112];
-    let put32 = |b: &mut [u8], o: usize, v: u32| b[o..o + 4].copy_from_slice(&v.to_le_bytes());
-    let put64 = |b: &mut [u8], o: usize, v: u64| b[o..o + 8].copy_from_slice(&v.to_le_bytes());
-    put32(&mut b, 0, 1);
-    put32(&mut b, 4, mode);
-    put64(&mut b, 8, 1);
-    put64(&mut b, 32, md.len());
-    put32(&mut b, 40, 4096);
-    put32(&mut b, 44, md.len().div_ceil(512) as u32);
-    for (o, s) in [(48, md.atime()), (64, md.mtime()), (80, md.ctime())] {
-        put64(&mut b, o, s as u64);
-    }
-    put64(&mut b, 96, md.ino());
+    let mut record = crate::rebirth::abi::Stat64::from_metadata(md);
+    record.mode = mode;
+    let mut b = [0u8; crate::rebirth::abi::STAT64_BYTES];
+    record.write(&mut b).expect("fixed stat buffer");
     write_bytes(mem, buf, &b);
 }
 
