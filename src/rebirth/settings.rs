@@ -95,8 +95,8 @@ impl Settings {
             "unsupported render scale"
         );
         ensure!(
-            [15, 20, 30].contains(&self.fps),
-            "only verified 60-Hz divisor caps 15/20/30 are available"
+            [15, 20, 30, 60].contains(&self.fps),
+            "only verified 60-Hz divisor caps 15/20/30/60 are available"
         );
         ensure!(
             self.texture <= 2
@@ -192,7 +192,7 @@ mod tests {
             assert_eq!(a.contains(&"-noautoload".into()), mode == 1);
             assert_eq!(a.iter().any(|v| v.starts_with("-playercoords=")), mode == 2);
         }
-        for (fps, div) in [(15, 4), (20, 3), (30, 2)] {
+        for (fps, div) in [(15, 4), (20, 3), (30, 2), (60, 1)] {
             s.fps = fps;
             assert!(s
                 .engine_args()
@@ -217,13 +217,31 @@ mod tests {
         // Launch contract coverage only; this does not assert an in-game spawn.
     }
     #[test]
+    fn sixty_fps_persists_without_changing_mode_or_simulation_arguments() {
+        assert_eq!(Settings::default().fps, 30);
+        for mode in [1, 2] {
+            let mut s = Settings::default();
+            s.mode = mode;
+            let before = s.engine_args().unwrap();
+            s.fps = 60;
+            let restored = Settings::parse(&serde_json::to_vec(&s).unwrap()).unwrap();
+            assert_eq!(restored.fps, 60);
+            let after = restored.engine_args().unwrap();
+            assert_eq!(after.iter().filter(|a| a.starts_with("-frameLimit=")).count(), 1);
+            assert!(after.contains(&"-frameLimit=1".to_string()));
+            let without_cap = |args: Vec<String>| args.into_iter()
+                .filter(|a| !a.starts_with("-frameLimit=")).collect::<Vec<_>>();
+            assert_eq!(without_cap(before), without_cap(after));
+        }
+    }
+    #[test]
     fn rejects_unsupported_and_roundtrips() {
         let s = Settings::default();
         assert_eq!(
             s,
             Settings::parse(&serde_json::to_vec(&s).unwrap()).unwrap()
         );
-        for fps in [0, 24, 40, 60] {
+        for fps in [0, 24, 40, 59, 61, 120] {
             let mut s = s.clone();
             s.fps = fps;
             assert!(s.validate().is_err());

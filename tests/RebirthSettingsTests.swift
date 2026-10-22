@@ -18,7 +18,16 @@ import Foundation
             s.applyPreset(name);try s.validate();check(s.preset==name && s.mode==2 && s.volume==0.25)
             try RebirthStore.save(s,defaults);check(try RebirthStore.load(defaults)==s)
         }
-        s.fps=60
+        check(RebirthSettings().fps==30)
+        for mode in [1,2] {
+            for fps in [15,20,30,60,30,60] {
+                s.mode=mode;s.fps=fps
+                try RebirthStore.save(s,defaults)
+                check(try RebirthStore.load(defaults)==s)
+            }
+        }
+        check(RebirthSettings.migrateLegacy(["fps":60]).fps==60)
+        s.fps=120
         do {try RebirthStore.save(s,defaults);preconditionFailure("unsupported cap accepted")}catch{checks+=1}
         s=RebirthSettings.migrateLegacy(["width":Int.max,"fps":true,"volume":Double.nan,"mode":3,"scale":72])
         try s.validate();check(s.fps==30 && s.volume==1 && s.mode==1 && s.scale==100)

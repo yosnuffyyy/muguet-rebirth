@@ -16,7 +16,7 @@ struct RebirthSettings: Codable, Equatable {
         func require(_ condition:Bool) throws {if !condition {throw CocoaError(.coderReadCorrupt)}}
         try require(schema == 1 && [1,2].contains(mode) && Self.presets.contains(preset))
         try require((320...2560).contains(width) && (180...1440).contains(height) && width > height && width%2 == 0 && height%2 == 0)
-        try require([50,60,70,80,90,100].contains(scale) && [15,20,30].contains(fps))
+        try require([50,60,70,80,90,100].contains(scale) && [15,20,30,60].contains(fps))
         try require((width*scale+100)/200*2 >= 320 && (height*scale+100)/200*2 >= 180)
         try require((0...2).contains(texture) && (-1...2).contains(shadow) && (0...3).contains(reflection) && (0...1).contains(water) && (0...2).contains(particles) && (0...3).contains(grass) && (0...3).contains(postfx) && (0...2).contains(ssao) && [0,2,4,8,16].contains(anisotropy))
         try require(density.isFinite && (0...1).contains(density) && volume.isFinite && (0...1).contains(volume))
@@ -51,7 +51,7 @@ struct RebirthSettings: Codable, Equatable {
         let bases = [(640,360),(960,540),(1280,720)]
         let b = integer("base",0...2,0); (s.width,s.height) = bases[b]
         let scale = integer("scale",50...100,100); s.scale = [50,60,70,80,90,100].contains(scale) ? scale : 100
-        let fps = integer("fps",15...30,30); s.fps = [15,20,30].contains(fps) ? fps : 30
+        let fps = integer("fps",15...60,30); s.fps = [15,20,30,60].contains(fps) ? fps : 30
         s.texture = integer("texture",0...2,0); s.fxaa = integer("aa",0...1,0) == 1
         s.shadow = integer("shadow",(-1)...2,-1); s.reflection = integer("reflection",0...3,0)
         s.water = integer("water",0...1,0); s.particles = integer("particles",0...2,0)
