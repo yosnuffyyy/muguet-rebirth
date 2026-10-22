@@ -75,15 +75,18 @@ public func muguetShowLauncher(_ viewController: UnsafeMutableRawPointer, _ done
 
 // Main-thread, one-shot visibility evidence; no private APIs or per-frame traversal.
 private func inspectGameVisibility(_ parent:UIViewController) {
-    var count=0
-    func visit(_ v:UIView,_ hidden:Bool,_ alpha:CGFloat) {
-        let h=hidden || v.isHidden;let a=alpha*v.alpha
-        if v.layer is CAMetalLayer {
+    var count=0,visited=0
+    // raw-window-metal can attach a CAMetalLayer as a sublayer of an ordinary
+    // UIView backing layer. Inspect layers, not only UIView.layer identities.
+    func visit(_ layer:CALayer,_ hidden:Bool,_ alpha:Float) {
+        guard visited < 256 else {return};visited += 1
+        let h=hidden || layer.isHidden;let a=alpha*layer.opacity
+        if let metal=layer as? CAMetalLayer {
             count += 1
-            print("[display] CAMetalLayer hidden=\(h) effectiveAlpha=\(a) windowAttached=\(v.window != nil) frame=\(v.convert(v.bounds,to:nil)) layerHidden=\(v.layer.isHidden) layerOpacity=\(v.layer.opacity)")
+            print("[display] CAMetalLayer hidden=\(h) effectiveOpacity=\(a) frame=\(metal.frame) drawableSize=\(metal.drawableSize) attached=\(metal.superlayer != nil)")
         }
-        for c in v.subviews {visit(c,h,a)}
+        for child in layer.sublayers ?? [] {visit(child,h,a)}
     }
-    visit(parent.view,false,1)
-    print("[display] metalViews=\(count) presentedController=\(String(describing:parent.presentedViewController)) windowHidden=\(parent.view.window?.isHidden ?? true); visibility inspection is not pixel/display proof")
+    visit(parent.view.layer,false,1)
+    print("[display] metalLayers=\(count) inspectedLayers=\(visited)/256 rootFrame=\(parent.view.convert(parent.view.bounds,to:nil)) rootHidden=\(parent.view.isHidden) windowAttached=\(parent.view.window != nil) presentedController=\(String(describing:parent.presentedViewController)) windowHidden=\(parent.view.window?.isHidden ?? true); visibility inspection is not pixel/display proof")
 }
