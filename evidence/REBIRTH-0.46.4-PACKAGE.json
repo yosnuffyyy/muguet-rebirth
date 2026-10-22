@@ -1,0 +1,12 @@
+{
+  "version": "0.46.4",
+  "build": "50",
+  "bundle": "io.github.yosnuffyyy.gtanativeprobe",
+  "source": "35c28af3f9ca736e241cd97dbcc596360a60e079",
+  "upstream": "1b4600b052b864c78fe36180073ff406663b7e0b",
+  "ipa": "GTA-Rebirth-0.46.4-35c28af3f9ca-unsigned.ipa",
+  "bytes": 63158220,
+  "sha256": "323ce4a3b731712892ded3b02cd405036c10bf43ae63a8b408bac8d7b12811c9",
+  "signing": "ad-hoc; requires user signing for installation",
+  "phone_verified": false
+}

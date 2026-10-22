@@ -1,0 +1,42 @@
+{
+  "result": "PASS",
+  "checks": 352,
+  "engineSHA256": "e65bec476e8fd8125515150c24037c9bd0d0c46530e3544f9d389ab108b5592e",
+  "origin": "Windows Node isolated original-WASM argument and SetFrameLock fixture",
+  "fixtures": "Existing launch fixtures adapted to 15/20/30/60 caps; current Rust generation tested separately in CI",
+  "observed": [
+    {
+      "mode": 1,
+      "divisor": 4
+    },
+    {
+      "mode": 1,
+      "divisor": 3
+    },
+    {
+      "mode": 1,
+      "divisor": 2
+    },
+    {
+      "mode": 1,
+      "divisor": 1
+    },
+    {
+      "mode": 2,
+      "divisor": 4
+    },
+    {
+      "mode": 2,
+      "divisor": 3
+    },
+    {
+      "mode": 2,
+      "divisor": 2
+    },
+    {
+      "mode": 2,
+      "divisor": 1
+    }
+  ],
+  "limitations": "Test-only exports and sysParam setup; not full startup, physical presentation or achieved FPS"
+}

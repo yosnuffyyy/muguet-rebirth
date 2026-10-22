@@ -1,0 +1,32 @@
+{
+  "result": "PASS",
+  "engineSHA256": "e65bec476e8fd8125515150c24037c9bd0d0c46530e3544f9d389ab108b5592e",
+  "origin": "Windows Node original-WASM timer fixture, not iPhone gameplay",
+  "initialization": "CApp startup minimum 1/3000 s and timer clock scale 1e-9; no production memory writes",
+  "rows": [
+    {
+      "fps": 15,
+      "realSeconds": 10,
+      "engineDeltaSum": 9.999999403953552,
+      "engineMilliseconds": 9900
+    },
+    {
+      "fps": 20,
+      "realSeconds": 10,
+      "engineDeltaSum": 9.999999403953552,
+      "engineMilliseconds": 10000
+    },
+    {
+      "fps": 30,
+      "realSeconds": 10,
+      "engineDeltaSum": 9.999999403953552,
+      "engineMilliseconds": 10000
+    },
+    {
+      "fps": 60,
+      "realSeconds": 10,
+      "engineDeltaSum": 9.999999403953552,
+      "engineMilliseconds": 10000
+    }
+  ]
+}
