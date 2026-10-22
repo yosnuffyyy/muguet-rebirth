@@ -1,0 +1,22 @@
+{
+  "version": "0.46.3",
+  "build": "49",
+  "bundle": "io.github.yosnuffyyy.gtanativeprobe",
+  "source": "6768a3c4db0df000d8b6abb6cb18d29e46fba9bf",
+  "upstream": "1b4600b052b864c78fe36180073ff406663b7e0b",
+  "ipa": "GTA-Rebirth-0.46.3-6768a3c4db0d-unsigned.ipa",
+  "bytes": 63158232,
+  "sha256": "e4e453469031171a3bdb3253aee385553a41308a07c036f9553bf63dd6680dde",
+  "signing": "ad-hoc; requires user signing for installation",
+  "phone_verified": false,
+  "ci": "https://github.com/yosnuffyyy/muguet-rebirth/actions/runs/39697049904",
+  "ci_conclusion": "success",
+  "mach_o_uuid": "04091096-CD94-3CBA-AAAD-399229994E7E",
+  "local_archive_crc": true,
+  "local_arm64_and_identity_verified": true,
+  "host_metal_device": "Apple Paravirtual device",
+  "pixel_cases": 12,
+  "pixel_validation_errors": 0,
+  "full_host_tests": 20,
+  "phone_visible_gameplay_verified": false
+}
