@@ -1,0 +1,114 @@
+name: Rebirth host memory sanitizer
+on:
+  push:
+    branches: [native-ios-prototype]
+    paths: ['.github/workflows/rebirth-memory-sanitizer.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  host-address-sanitizer:
+    if: github.ref == 'refs/heads/native-ios-prototype'
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Pin diagnostic compiler
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.98.1 --profile minimal
+          target="$(rustc +1.98.1 -vV | sed -n 's/^host: //p')"
+          case "$target" in
+            aarch64-apple-darwin|x86_64-apple-darwin) ;;
+            *) printf 'Unsupported sanitizer host: %s\n' "$target" >&2; exit 1 ;;
+          esac
+          printf 'ASAN_TARGET=%s\n' "$target" >> "$GITHUB_ENV"
+      - name: Sanitized host contract suite
+        shell: bash
+        env:
+          # Diagnostic-only opt-in on the pinned compiler; never used for IPA builds.
+          # https://doc.rust-lang.org/nightly/unstable-book/compiler-flags/sanitizer.html
+          # https://doc.rust-lang.org/nightly/unstable-book/compiler-environment-variables/RUSTC_BOOTSTRAP.html
+          RUSTC_BOOTSTRAP: '1'
+          RUSTFLAGS: '-Zsanitizer=address -Cdebuginfo=1 -Cforce-frame-pointers=yes'
+          RUSTDOCFLAGS: '-Zsanitizer=address'
+          ASAN_OPTIONS: 'detect_leaks=1:detect_stack_use_after_return=1:halt_on_error=1'
+          CARGO_TARGET_DIR: ${{ runner.temp }}/rebirth-host-asan-target
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, pathlib, subprocess, sys
+
+          root = pathlib.Path('evidence/host-asan')
+          root.mkdir(parents=True, exist_ok=True)
+          target = os.environ['ASAN_TARGET']
+          # Cargo's explicit target keeps build scripts and procedural macros
+          # separate from instrumented target dependencies, even on the host.
+          # https://doc.rust-lang.org/cargo/reference/config.html#buildrustflags
+          command = ['cargo', '+1.98.1', 'test', '--locked', '--manifest-path',
+                     'tools/Cargo.toml', '--target', target, '--', '--nocapture']
+          metadata = '\n'.join([
+              'Rebirth host contract AddressSanitizer + macOS leak detection',
+              'revision=' + subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
+              subprocess.check_output(['rustc', '+1.98.1', '-vV'], text=True).strip(),
+              'target=' + target,
+              'command=' + ' '.join(command),
+              'ASAN_OPTIONS=' + os.environ['ASAN_OPTIONS'],
+              'Scope: tools contract library and its Unix asset integration tests.',
+              'Limits: distributed std is not rebuilt/instrumented; host build scripts',
+              'and procedural macros are not sanitized. The complete Wasmtime host,',
+              'guest engine, GPU/Metal, UIKit and physical iPhone execution are not covered.',
+              'ASan does not establish race freedom, full Rust aliasing correctness,',
+              'or device gameplay/memory performance. No IPA is built by this job.',
+              ''
+          ])
+          (root / 'scope.txt').write_text(metadata)
+          print(metadata, flush=True)
+          # Retain a bounded first 64KiB and final 2MiB. Always drain the child;
+          # truncating an artifact must never change the compiler/test outcome.
+          prefix_limit, tail_limit = 64 * 1024, 2 * 1024 * 1024
+          prefix, tail, total = bytearray(), bytearray(), 0
+          with (root / 'contracts-asan.log').open('wb') as output:
+              output.write(metadata.encode())
+              output.flush()
+              child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+              try:
+                  while True:
+                      chunk = child.stdout.read(65536)
+                      if not chunk:
+                          break
+                      total += len(chunk)
+                      sys.stdout.buffer.write(chunk)
+                      sys.stdout.buffer.flush()
+                      prefix.extend(chunk[:max(0, prefix_limit - len(prefix))])
+                      tail.extend(chunk)
+                      if len(tail) > tail_limit:
+                          del tail[:-tail_limit]
+                  code = child.wait()
+              finally:
+                  if child.poll() is None:
+                      child.terminate()
+                      try:
+                          child.wait(timeout=5)
+                      except subprocess.TimeoutExpired:
+                          child.kill()
+                          child.wait()
+                  if total <= tail_limit:
+                      output.write(tail)
+                  else:
+                      output.write(prefix)
+                      omitted = max(0, total - len(prefix) - len(tail))
+                      output.write(f'\n[bounded artifact: {omitted} middle bytes omitted]\n'.encode())
+                      # Avoid overlapping prefix/tail bytes near the bound.
+                      output.write(tail[max(0, len(prefix) + len(tail) - total):])
+                  output.write(f'\nchild_exit={child.returncode}; output_bytes={total}\n'.encode())
+          sys.exit(code if code >= 0 else 128 - code)
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: rebirth-host-memory-sanitizer
+          path: evidence/host-asan/
+          if-no-files-found: warn
+          retention-days: 14
