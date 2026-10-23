@@ -1,5 +1,7 @@
 # Project Rebirth — RAM ownership and optimization
 
+Follow-up: [Rebirth 0.46.6 lifetime, scheduling and termination evidence](REBIRTH-0.46.6-STABILITY-PERFORMANCE.md). The results below remain the historical 0.46.5 report.
+
 ## Status and identity
 
 This work targets the genuine `yosnuffyyy/muguet-rebirth` fork, branch `native-ios-prototype`, based on upstream Muguet `1b4600b052b864c78fe36180073ff406663b7e0b`. It does not use the obsolete Stage A or wasm2c runtime.

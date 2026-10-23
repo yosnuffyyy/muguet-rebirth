@@ -1,0 +1,75 @@
+{
+  "source": "e8c7f7e8a66621bfa8e73bdf4b1c6c48d2087153",
+  "ci_run": 40015267583,
+  "provenance": "macOS-15 CI host fixtures and Apple Paravirtual Metal adapter, not physical iPhone gameplay",
+  "baseline_executable": "5ce6cf698975a628057dee786297fc65a653fb79",
+  "streaming_cache": {
+    "resources": 4096,
+    "live_window": 128,
+    "groups_per_resource": 4,
+    "baseline_groups": 16384,
+    "indexed_groups": 512,
+    "baseline_owned_payload_bytes": 67108864,
+    "indexed_owned_payload_bytes": 2097152,
+    "baseline_wall_ms": 23.383,
+    "indexed_wall_ms": 13.952,
+    "measurement": "modeled Rc-owned payload and fixture wall time, not driver memory or game-frame duration"
+  },
+  "manifest": {
+    "entries": 20000,
+    "retained_path_capacity_bytes": 780000,
+    "released_lookup_path_capacity_bytes": 1560000,
+    "released_map_entries": 40000
+  },
+  "metal": {
+    "texture_view_id_reuse": "passed",
+    "nearest_sampler_id_reuse": "passed",
+    "buffer_and_uav_counter_generation": "passed",
+    "obsolete_depth_proxy_count": 2,
+    "obsolete_depth_proxy_logical_bytes": 8388608,
+    "inflight_pixels": "passed",
+    "uniform_draw_pixels": 14,
+    "uniform_slots_before_and_after": 3,
+    "deferred_fence_before_uniform_write_and_submit": "passed",
+    "validation_errors": 0,
+    "physical_retirement_bytes": "UNKNOWN"
+  },
+  "telemetry": {
+    "fixed_bytes": 21312,
+    "record_calls": 1000000,
+    "macos_release_wall_ms": 2.977625,
+    "windows_release_wall_ms": 1.0127,
+    "excludes": [
+      "clock reads",
+      "report sorting and formatting",
+      "gameplay overhead"
+    ]
+  },
+  "tests": {
+    "swift_assertions": 40,
+    "portable_rust": 41,
+    "unix_asset_rust": 5,
+    "host_rust": 65,
+    "entitlement_python": 2,
+    "rust_counts_overlap": true,
+    "original_engine": "TLS/imports/input only; two modes x two resolutions x repeats; no world/main/GPU gameplay",
+    "ui": "seven actual Swift simulator previews; production Rust not linked",
+    "asan": {
+      "ci_run": 40015584798,
+      "workflow_revision": "45746ea28a8fd40b101badaa432aa841a8d05dac",
+      "portable": 41,
+      "unix_asset": 5,
+      "result": "passed",
+      "scope": "component contracts only; no full Wasmtime/GPU/UIKit/iPhone instrumentation"
+    },
+    "physical_device": "not run"
+  },
+  "limits": [
+    "New Israelrebirth log and matching OS termination report were not available; user-transcribed counters are not independently extracted.",
+    "No physical device footprint reduction, FPS improvement, freeze elimination or long-session stability established.",
+    "Single sequential before/after fixture observation inside concurrent suite; timing includes checks and allocations.",
+    "Reverse index consumes metadata; logical ownership is not physical reclaimed memory.",
+    "Earlier preparation can overlap transient allocations with retiring GPU work; device peak memory must be measured.",
+    "No quality, resolution, requested FPS, engine ABI or save namespace changes."
+  ]
+}
