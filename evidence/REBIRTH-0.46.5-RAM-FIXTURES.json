@@ -1,0 +1,68 @@
+{
+  "source": "5ce6cf698975a628057dee786297fc65a653fb79",
+  "ci_run": 40007555943,
+  "provenance": "macOS-15 CI host fixtures and real host Metal; not physical iPhone gameplay",
+  "uniform": {
+    "frames": 90,
+    "bytes_per_frame": 8388608,
+    "cpu_capacity_before": 25165824,
+    "cpu_capacity_after": 8388608,
+    "gpu_capacity_per_chunk_before_and_after": 25165824,
+    "before_wall_ms": 61.352083,
+    "after_wall_ms": 40.713541
+  },
+  "file_transfer": {
+    "request_bytes": 37314560,
+    "payload_capacity_before": 37314560,
+    "payload_capacity_after": 65536,
+    "before_wall_ms": 17.0185,
+    "after_wall_ms": 6.630625,
+    "checksum": 4757606400
+  },
+  "uav_clear": {
+    "bytes": 67108864,
+    "extra_snapshot_before": 67108864,
+    "extra_snapshot_after": 0,
+    "required_staging_before_and_after": 67108864,
+    "before_wall_ms": 32.823417,
+    "after_wall_ms": 5.919167
+  },
+  "pipeline_input": {
+    "file_bytes": 33554432,
+    "recipes": 32768,
+    "read_buffer": 16384,
+    "fixture_peak_line": 1024,
+    "parsed_values_at_once": 1,
+    "parsed_value_allocation_bytes": "UNKNOWN",
+    "eager_value_order_equivalence": "separate small fixture passed"
+  },
+  "metal": {
+    "draw_pixels": 14,
+    "frame_slots": 3,
+    "uniform_retirement_and_replacement": "passed",
+    "borrowed_upload_guest_overwrite": "passed",
+    "uav_sizes": [
+      4,
+      20,
+      4096
+    ],
+    "validation_errors": 0,
+    "existing_resolve_mrt_final_blit": "passed"
+  },
+  "tests": {
+    "swift_assertions": 40,
+    "portable_rust": 27,
+    "asset_rust": 5,
+    "host_rust": 43,
+    "entitlement_python": 2,
+    "rust_counts_overlap": true,
+    "sanitizers": "not run",
+    "physical_device": "not run"
+  },
+  "limits": [
+    "Single sequential before/after timing observation per fixture; concurrently executing unit-test suite; caches/page faults/allocator warming are uncontrolled.",
+    "Capacities and byte/pixel correctness are stronger evidence than host wall times.",
+    "No physical-device footprint savings percentage, FPS or long-session stability demonstrated.",
+    "No graphics quality or game settings reduction."
+  ]
+}
