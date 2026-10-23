@@ -45,7 +45,11 @@ struct Fs {
     root: PathBuf,
     fds: HashMap<i64, Entry>,
     next_fd: i64,
+    // One bounded transfer buffer shared by synchronous file operations under FS.
+    scratch: Box<[u8; FILE_SCRATCH_BYTES]>,
 }
+
+const FILE_SCRATCH_BYTES: usize = 64 * 1024;
 
 static FS: LazyLock<Mutex<Fs>> = LazyLock::new(|| {
     let root = std::env::var("MUGUET_FSROOT").unwrap_or_else(|_| "fsroot".into());
@@ -53,7 +57,7 @@ static FS: LazyLock<Mutex<Fs>> = LazyLock::new(|| {
     for d in ["tmp", "home/web_user", "dev", "proc/self"] {
         let _ = fs::create_dir_all(root.join(d));
     }
-    Mutex::new(Fs { root, fds: HashMap::new(), next_fd: 3 })
+    Mutex::new(Fs { root, fds: HashMap::new(), next_fd: 3, scratch: Box::new([0; FILE_SCRATCH_BYTES]) })
 });
 
 fn guest_abs(fs: &Fs, dirfd: i64, path: &str) -> Result<String, i64> {
@@ -96,8 +100,71 @@ fn ok_i(results: &mut [Val], v: i64) {
     }
 }
 
-fn iovecs(mem: &SharedMemory, iovs: u64, n: u64) -> Vec<(u64, u64)> {
-    (0..n).map(|k| (read_u64(mem, iovs + k * 16).unwrap_or(0), read_u64(mem, iovs + k * 16 + 8).unwrap_or(0))).collect()
+fn guest_range(mem: &SharedMemory, ptr: u64, length: u64) -> bool {
+    ptr.checked_add(length).is_some_and(|end| end <= mem.data_size() as u64)
+}
+
+fn iovecs(mem: &SharedMemory, iovs: u64, n: u64) -> Result<Vec<(u64, u64)>, i64> {
+    let bytes = n.checked_mul(16).ok_or(EFAULT)?;
+    if !guest_range(mem, iovs, bytes) { return Err(EFAULT); }
+    let count = usize::try_from(n).map_err(|_| EFAULT)?;
+    let mut result = Vec::new();
+    result.try_reserve_exact(count).map_err(|_| 48 /* WASI ENOMEM */)?;
+    for k in 0..n {
+        let ptr = read_u64(mem, iovs + k * 16).ok_or(EFAULT)?;
+        let len = read_u64(mem, iovs + k * 16 + 8).ok_or(EFAULT)?;
+        if !guest_range(mem, ptr, len) { return Err(EFAULT); }
+        result.push((ptr, len));
+    }
+    Ok(result)
+}
+
+/// File payloads are copied in bounded chunks, not allocated at request size.
+/// The synchronous guest call owns these ranges until it returns. Snapshot the
+/// descriptors first: a valid read destination may overlap the iovec table.
+fn transfer_file(file: &mut File, mem: &SharedMemory, iov: &[(u64, u64)],
+                 offset: Option<u64>, scratch: &mut [u8], writing: bool) -> Result<u64, i64> {
+    if scratch.is_empty() { return Err(EINVAL); }
+    let mut total = 0u64;
+    for &(ptr, len) in iov {
+        if !guest_range(mem, ptr, len) { return Err(EFAULT); }
+        let mut done = 0u64;
+        while done < len {
+            let count = (len - done).min(scratch.len() as u64) as usize;
+            let position = match offset {
+                Some(start) => Some(start.checked_add(total).ok_or(EINVAL)?),
+                None => None,
+            };
+            if writing {
+                let (base, _) = crate::mem_base_len(mem);
+                // Stable shared-memory base; never retain this pointer over I/O.
+                unsafe { std::ptr::copy_nonoverlapping(base.add((ptr + done) as usize), scratch.as_mut_ptr(), count); }
+            }
+            let result = loop {
+                let r = match (writing, position) {
+                    (true, Some(at)) => file.write_at(&scratch[..count], at),
+                    (true, None) => file.write(&scratch[..count]),
+                    (false, Some(at)) => file.read_at(&mut scratch[..count], at),
+                    (false, None) => file.read(&mut scratch[..count]),
+                };
+                if matches!(&r, Err(e) if e.kind() == std::io::ErrorKind::Interrupted) { continue; }
+                break r;
+            };
+            let n = match result {
+                Ok(n) => n,
+                Err(_) if total != 0 => return Ok(total),
+                Err(_) => return Err(EIO),
+            };
+            if n == 0 {
+                return if writing && total == 0 { Err(EIO) } else { Ok(total) };
+            }
+            if !writing && !write_bytes(mem, ptr + done, &scratch[..n]) { return Err(EFAULT); }
+            total += n as u64;
+            done += n as u64;
+            if !writing && n < count { return Ok(total); }
+        }
+    }
+    Ok(total)
 }
 
 fn read_dir_names(host: &Path) -> Vec<(String, u8)> {
@@ -267,53 +334,26 @@ pub fn handle(name: &str, mem: &SharedMemory, p: &[Val], results: &mut [Val]) ->
         | "__syscall_recvfrom" | "__syscall_setsockopt" | "__syscall_getsockopt"
         | "__syscall_getsockname" | "__syscall_shutdown" | "__syscall_poll" => -ENOSYS,
 
-        "fd_read" | "fd_pread" => {
+        "fd_read" | "fd_pread" | "fd_write" | "fd_pwrite"
+            if matches!(name, "fd_read" | "fd_pread") || a(0) > 2 => {
             let fd = a(0);
-            let iov = iovecs(mem, a(1) as u64, a(2) as u64);
-            let (offset, nread_ptr) = if name == "fd_pread" { (Some(a(3) as u64), a(4) as u64) } else { (None, a(3) as u64) };
-            match fs.fds.get_mut(&fd) {
-                Some(Entry::File { file, .. }) => {
-                    let mut total = 0u64;
-                    let mut off = offset;
-                    for (ptr, len) in iov {
-                        let mut buf = vec![0u8; len as usize];
-                        let n = match off {
-                            Some(o) => file.read_at(&mut buf, o).unwrap_or(0),
-                            None => file.read(&mut buf).unwrap_or(0),
-                        };
-                        write_bytes(mem, ptr, &buf[..n]);
-                        total += n as u64;
-                        if let Some(o) = off.as_mut() { *o += n as u64; }
-                        if (n as u64) < len { break; }
-                    }
-                    write_u64(mem, nread_ptr, total);
-                    0
-                }
-                Some(Entry::Dir { .. }) => EISDIR,
-                None if fd == 0 => { write_u64(mem, nread_ptr, 0); 0 }
-                None => EBADF,
-            }
-        }
-        "fd_write" | "fd_pwrite" if a(0) > 2 => {
-            let fd = a(0);
-            let iov = iovecs(mem, a(1) as u64, a(2) as u64);
-            let (offset, nw_ptr) = if name == "fd_pwrite" { (Some(a(3) as u64), a(4) as u64) } else { (None, a(3) as u64) };
-            match fs.fds.get_mut(&fd) {
-                Some(Entry::File { file, .. }) => {
-                    let mut total = 0u64;
-                    let mut off = offset;
-                    for (ptr, len) in iov {
-                        let data = read_bytes(mem, ptr, len);
-                        let ok = match off { Some(o) => file.write_all_at(&data, o).is_ok(), None => file.write_all(&data).is_ok() };
-                        if !ok { break; }
-                        total += len;
-                        if let Some(o) = off.as_mut() { *o += len; }
-                    }
-                    write_u64(mem, nw_ptr, total);
-                    0
-                }
-                _ => EBADF,
-            }
+            let writing = matches!(name, "fd_write" | "fd_pwrite");
+            let positioned = matches!(name, "fd_pread" | "fd_pwrite");
+            let offset = positioned.then(|| a(3) as u64);
+            let count_ptr = a(if positioned { 4 } else { 3 }) as u64;
+            (|| {
+                if !guest_range(mem, count_ptr, 8) { return Err(EFAULT); }
+                let iov = iovecs(mem, a(1) as u64, a(2) as u64)?;
+                let Fs { fds, scratch, .. } = &mut *fs;
+                let total = match fds.get_mut(&fd) {
+                    Some(Entry::File { file }) => transfer_file(file, mem, &iov, offset, &mut scratch[..], writing)?,
+                    Some(Entry::Dir { .. }) => return Err(if writing { EBADF } else { EISDIR }),
+                    None if fd == 0 && !writing => 0,
+                    None => return Err(EBADF),
+                };
+                write_u64(mem, count_ptr, total);
+                Ok(0)
+            })().unwrap_or_else(|error| error)
         }
         "fd_seek" => {
             let (fd, offset, whence, out) = (a(0), a(1), a(2), a(3) as u64);
@@ -335,13 +375,16 @@ pub fn handle(name: &str, mem: &SharedMemory, p: &[Val], results: &mut [Val]) ->
 }
 
 pub fn httpfs_manifest(mem: &SharedMemory, p: &[Val], results: &mut [Val]) {
-    static MANIFEST: LazyLock<Option<Vec<u8>>> = LazyLock::new(|| {
-        if let Some(launch)=crate::rebirth::current() {return Some(launch.layout.manifest.clone());}
+    // The launch already owns immutable original bytes. Keep a separate owner
+    // only for the upstream CLI path without a frozen Rebirth launch.
+    static CLI_MANIFEST: LazyLock<Option<Vec<u8>>> = LazyLock::new(|| {
         let dir = std::env::var("MUGUET_DATA").unwrap_or_default();
         fs::read(Path::new(&dir).join("manifest.json")).ok()
     });
+    let manifest = crate::rebirth::current().map(|launch| launch.layout.manifest.as_ref())
+        .or_else(|| CLI_MANIFEST.as_deref());
     let a = |i: usize| -> i64 { match p.get(i) { Some(Val::I32(x)) => *x as i64, Some(Val::I64(x)) => *x, _ => 0 } };
-    let r = match MANIFEST.as_ref() {
+    let r = match manifest {
         None => -1,
         Some(bytes) => {
             if a(1) as usize > bytes.len() {
@@ -357,6 +400,88 @@ pub fn httpfs_manifest(mem: &SharedMemory, p: &[Val], results: &mut [Val]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn transfer_fixture(label: &str) -> (std::path::PathBuf, File, SharedMemory) {
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!("rebirth-transfer-{label}-{}-{nonce}", std::process::id()));
+        let file = OpenOptions::new().create_new(true).read(true).write(true).open(&path).unwrap();
+        let mut config = wasmtime::Config::new(); config.shared_memory(true);
+        let engine = wasmtime::Engine::new(&config).unwrap();
+        let mem = SharedMemory::new(&engine, wasmtime::MemoryType::shared(1024, 1024)).unwrap();
+        (path, file, mem)
+    }
+
+    #[test]
+    fn bounded_transfer_large_request_byte_equivalence() {
+        // This is a host file-I/O fixture, not a measured iPhone streaming call.
+        const REQUEST: usize = 37_314_560;
+        let (path, mut file, mem) = transfer_fixture("large");
+        let block: Vec<u8> = (0..FILE_SCRATCH_BYTES).map(|i| (i.wrapping_mul(31) >> 3) as u8).collect();
+        let mut remaining = REQUEST;
+        while remaining != 0 {
+            let n = remaining.min(block.len()); file.write_all(&block[..n]).unwrap(); remaining -= n;
+        }
+        let ptr = FILE_SCRATCH_BYTES as u64;
+        file.seek(SeekFrom::Start(0)).unwrap();
+        let start = std::time::Instant::now();
+        let mut old = vec![0; REQUEST];
+        assert_eq!(file.read(&mut old).unwrap(), REQUEST);
+        assert!(write_bytes(&mem, ptr, &old));
+        let before = start.elapsed();
+        drop(old);
+        let checksum = |mem: &SharedMemory| -> u64 {
+            (0..REQUEST).step_by(FILE_SCRATCH_BYTES).map(|at| {
+                read_bytes(mem, ptr + at as u64, (REQUEST - at).min(FILE_SCRATCH_BYTES) as u64)
+                    .into_iter().map(u64::from).sum::<u64>()
+            }).sum()
+        };
+        let expected = checksum(&mem);
+        assert!(expected > 0);
+        let zeros = [0; FILE_SCRATCH_BYTES];
+        for at in (0..REQUEST).step_by(FILE_SCRATCH_BYTES) {
+            write_bytes(&mem, ptr + at as u64, &zeros[..(REQUEST - at).min(FILE_SCRATCH_BYTES)]);
+        }
+        let mut scratch = Box::new([0; FILE_SCRATCH_BYTES]);
+        let allocation = scratch.as_ptr();
+        file.seek(SeekFrom::Start(17)).unwrap();
+        let start = std::time::Instant::now();
+        assert_eq!(transfer_file(&mut file, &mem, &[(ptr, REQUEST as u64)], Some(0), &mut scratch[..], false), Ok(REQUEST as u64));
+        let after = start.elapsed();
+        assert_eq!(file.stream_position().unwrap(), 17, "pread must preserve file position");
+        assert_eq!(checksum(&mem), expected);
+        assert_eq!(scratch.as_ptr(), allocation);
+        // Round-trip the same large payload through positioned writes.
+        assert_eq!(transfer_file(&mut file, &mem, &[(ptr, REQUEST as u64)], Some(0), &mut scratch[..], true), Ok(REQUEST as u64));
+        assert_eq!(file.stream_position().unwrap(), 17);
+        assert_eq!(file.metadata().unwrap().len(), REQUEST as u64);
+        eprintln!("[ram-fixture] file payload {} bytes; old transient payload allocation {}, bounded scratch {}; host read/copy before {:?}, after {:?}; checksum {} (not device footprint/FPS)", REQUEST, REQUEST, scratch.len(), before, after, expected);
+        drop(file); fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn bounded_transfer_short_reads_zero_lengths_and_iovec_aliasing() {
+        let (path, mut file, mem) = transfer_fixture("iov");
+        file.write_all(b"abcdefghij").unwrap(); file.seek(SeekFrom::Start(0)).unwrap();
+        let mut scratch = [0; 4];
+        assert!(write_bytes(&mem, 128, &[0xa5; 64]));
+        assert_eq!(transfer_file(&mut file, &mem, &[(128, 0), (128, 8), (144, 8)], None, &mut scratch, false), Ok(10));
+        assert_eq!(read_bytes(&mem,128,8), b"abcdefgh");
+        assert_eq!(read_bytes(&mem,144,8), [b'i',b'j',0xa5,0xa5,0xa5,0xa5,0xa5,0xa5]);
+        assert_eq!(file.stream_position().unwrap(),10);
+        // The first output overwrites the descriptor of the second output.
+        write_u64(&mem,256,272); write_u64(&mem,264,8);
+        write_u64(&mem,272,400); write_u64(&mem,280,2);
+        let snapshot = iovecs(&mem,256,2).unwrap();
+        assert_eq!(transfer_file(&mut file,&mem,&snapshot,Some(0),&mut scratch,false),Ok(10));
+        assert_eq!(read_bytes(&mem,272,8),b"abcdefgh");
+        assert_eq!(read_bytes(&mem,400,2),b"ij");
+        assert!(iovecs(&mem,u64::MAX,1).is_err());
+        assert!(iovecs(&mem,256,u64::MAX).is_err());
+        write_u64(&mem,256,mem.data_size() as u64 - 1); write_u64(&mem,264,2);
+        assert!(iovecs(&mem,256,1).is_err());
+        assert_eq!(transfer_file(&mut file,&mem,&[(u64::MAX,2)],Some(0),&mut scratch,false),Err(EFAULT));
+        drop(file); fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn original_stat64_preserves_canaries_and_rejects_short_memory() {
@@ -409,6 +534,12 @@ mod tests {
             assert!(handle(name, &mem, &params, &mut result));
             result[0].unwrap_i32() as i64
         };
+        // Console output remains the host logger's responsibility.
+        for name in ["fd_write", "fd_pwrite"] {
+            let mut untouched = [Val::I32(-999)];
+            assert!(!handle(name, &mem, &[Val::I64(1)], &mut untouched));
+            assert_eq!(untouched[0].unwrap_i32(), -999);
+        }
         write_bytes(&mem, 32, b"/tmp/SGTA50000\0");
         write_bytes(&mem, 64, b"/tmp/SGTA50001\0");
         let fd = call("__syscall_openat", &[AT_FDCWD, 32, 2 | O_CREAT | O_TRUNC, 0]);

@@ -117,7 +117,7 @@ mod unix {
     pub struct Reader {
         root: File,
         pub index: Index,
-        manifest: Box<[u8]>,
+        manifest: std::sync::Arc<[u8]>,
         cache: Vec<(usize, File, u64)>,
         scratch: Box<[u8; SCRATCH_BYTES]>,
         stamp: u64,
@@ -220,6 +220,11 @@ mod unix {
             Self::open_frozen(root, None)
         }
         pub fn open_frozen(root: &Path, frozen: Option<&[u8]>) -> Result<Self> {
+            Self::open_shared_frozen(root, frozen.map(std::sync::Arc::from))
+        }
+        /// Share the launch's immutable manifest; the worker cannot observe a
+        /// replacement file with reordered archive IDs during an active launch.
+        pub fn open_shared_frozen(root: &Path, frozen: Option<std::sync::Arc<[u8]>>) -> Result<Self> {
             use std::os::unix::fs::OpenOptionsExt;
             let data = std::fs::OpenOptions::new()
                 .read(true)
@@ -227,7 +232,7 @@ mod unix {
                 .open(root)?;
             let bytes = if let Some(frozen) = frozen {
                 ensure!(frozen.len() <= MANIFEST_LIMIT, "manifest exceeds bound");
-                frozen.to_vec()
+                frozen
             } else {
                 let mut manifest = relative(&data, "manifest.json", false)?;
                 let size = manifest.metadata()?.len();
@@ -239,13 +244,13 @@ mod unix {
                 (&mut manifest)
                     .take(MANIFEST_LIMIT as u64 + 1)
                     .read_to_end(&mut bytes)?;
-                bytes
+                std::sync::Arc::from(bytes)
             };
             let index = Index::parse(&bytes)?;
             Ok(Self {
                 root: data,
                 index,
-                manifest: bytes.into_boxed_slice(),
+                manifest: bytes,
                 cache: Vec::with_capacity(OPEN_FILES),
                 scratch: Box::new([0; SCRATCH_BYTES]),
                 stamp: 0,

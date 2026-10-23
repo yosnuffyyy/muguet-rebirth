@@ -10,7 +10,7 @@ pub struct Layout {
     pub data: PathBuf,
     pub shaders: PathBuf,
     pub wasm: PathBuf,
-    pub manifest: Vec<u8>,
+    pub manifest: std::sync::Arc<[u8]>,
 }
 fn child(root: &Path, relative: &str) -> Result<PathBuf> {
     ensure!(super::assets::valid_path(relative), "invalid relative path");
@@ -71,7 +71,7 @@ impl Layout {
             data,
             shaders,
             wasm,
-            manifest: bytes,
+            manifest: bytes.into(),
         })
     }
 }

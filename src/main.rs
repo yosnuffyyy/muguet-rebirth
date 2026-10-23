@@ -13,6 +13,9 @@ mod heapcheck;
 mod host;
 mod input;
 mod startup;
+mod memory_budget;
+mod gpu_memory;
+mod pipeline_recipes;
 #[cfg(feature = "jit")]
 mod input_check;
 mod import;

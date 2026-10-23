@@ -321,21 +321,20 @@ fn pool_grow(size: u64) -> bool {
 }
 
 fn resize_heap(mem: &SharedMemory, requested: u64) -> bool {
-    const MAX: u64 = 17_179_869_184;
     let old = mem.data_size() as u64;
-    if requested <= old { return false; }
-    if requested > MAX { return false; }
-    let mut cut = 1u64;
-    while cut <= 4 {
-        let over = (old as f64 * (1.0 + 0.2 / cut as f64)) as u64;
-        let over = over.min(requested + 100_663_296);
-        let new = MAX.min(requested.max(over).div_ceil(65536) * 65536);
+    let ty = mem.ty();
+    let limit = ty.maximum().and_then(|pages| pages.checked_mul(1u64 << ty.page_size_log2()))
+        .unwrap_or(17_179_869_184);
+    let Some(targets) = crate::rebirth::heap_growth::targets(old, requested, limit) else { return false; };
+    let mut previous = 0;
+    for new in targets {
+        if new == previous { continue; }
+        previous = new;
         let pages = (new - old).div_ceil(65536);
         if mem.grow(pages).is_ok() {
             eprintln!("[host] heap grown to {} MB", mem.data_size() >> 20);
             return true;
         }
-        cut *= 2;
     }
     false
 }

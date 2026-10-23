@@ -753,7 +753,7 @@ enum PipeEntry { Pending, Done(Option<Rc<Pl>>) }
 
 struct PipeStates { sig: Vec<SigEl>, rs: Option<Rc<StateObj>>, blend: Option<Rc<StateObj>>, dss: Option<Rc<StateObj>> }
 
-const RECIPE_LIMIT: u64 = 32 << 20;
+const RECIPE_LIMIT: u64 = crate::pipeline_recipes::FILE_LIMIT;
 static PIPE_CACHE: LazyLock<bool> = LazyLock::new(|| std::env::var("MUGUET_PIPE_CACHE").map_or(true, |v| v != "0"));
 
 fn parse_format(name: &str) -> Option<TextureFormat> {
@@ -802,7 +802,8 @@ struct VbReq { slot: u32, instance: bool, stride: u64, last: u64 }
 #[derive(Clone, Copy, Default)]
 struct PendingClear { color: Option<Color>, depth: Option<f32>, stencil: Option<u32> }
 
-struct Chunk { buf: Buffer, id: u64, base: u64, stage: Vec<u8>, lo: u64, hi: u64 }
+struct Chunk { buf: Buffer, id: u64, base: u64 }
+struct CachedBindGroup { bg: BindGroup, uid: u64, uniform: Option<u64> }
 struct BgResult { bg: BindGroup, uid: u64, dyn_off: Option<u32> }
 
 struct PendingMap {
@@ -844,7 +845,7 @@ pub struct Gpu {
     shader_index: HashMap<String, serde_json::Value>,
     shader_dir: PathBuf,
     map_programs: HashMap<String, Rc<Program>>,
-    warm: std::collections::VecDeque<serde_json::Value>,
+    warm: Option<crate::pipeline_recipes::Recipes>,
     warm_programs: HashMap<String, Option<Rc<Program>>>,
     warmed: u64,
     warm_t0: Option<Instant>,
@@ -860,9 +861,14 @@ pub struct Gpu {
     pending_skips0: u64,
     pipe_wait_left: Duration,
     compute: HashMap<String, Option<(ComputePipeline, BindGroupLayout, u64, Rc<Program>)>>,
-    bind_groups: FxHashMap<Vec<u64>, (BindGroup, u64)>,
+    bind_groups: FxHashMap<Vec<u64>, CachedBindGroup>,
     ubo_slots: Vec<Vec<Chunk>>,
     ubo_shared: Vec<(Buffer, u64)>,
+    // Queue writes copy synchronously: CPU bytes need one owner, not one per GPU frame slot.
+    ubo_staging: Vec<crate::gpu_memory::UniformStage>,
+    upload_snapshot_bytes_avoided: u64,
+    upload_snapshot_peak_avoided: u64,
+    uniform_reclaimed_bytes: u64,
     ubo_slot: usize,
     ubo_chunk: usize,
     ubo_off: u64,
@@ -1033,7 +1039,7 @@ impl Gpu {
             objs: Vec::new(), enc: None, enc_epoch: 1, pass: None, pass_key: None, pass_info: None, pass_st: PassSt::default(),
             map_programs: HashMap::new(), warm: Default::default(), warm_programs: HashMap::new(), warmed: 0, warm_t0: None, recipe_bytes: 0, s: State::new(), pdirty: true, last_pl: None, shader_index, shader_dir, next_uid: 1,
             bgl_cache: FxHashMap::default(), empty_bgl: None, pipelines: FxHashMap::default(), compute: HashMap::new(), bind_groups: FxHashMap::default(),
-            ubo_slots: (0..FRAME_SLOTS).map(|_| Vec::new()).collect(), ubo_shared: Vec::new(), ubo_slot: 0, ubo_chunk: 0, ubo_off: 0,
+            ubo_slots: (0..FRAME_SLOTS).map(|_| Vec::new()).collect(), ubo_shared: Vec::new(), ubo_staging: Vec::new(), upload_snapshot_bytes_avoided: 0, upload_snapshot_peak_avoided: 0, uniform_reclaimed_bytes: 0, ubo_slot: 0, ubo_chunk: 0, ubo_off: 0,
             dummy_tex: HashMap::new(), dummy_smp: None, dummy_cmp: None, dummy_bufs: HashMap::new(), zero_vb: None, zero_src: None, scratch: None,
             proxy_pipelines: HashMap::new(), unfilt: HashMap::new(), nearest: HashMap::new(), ramp_tex: 0, ramp_view: None, white_view: None, f2d_pipeline: None, bc1_astc: None, astc_jobs: Vec::new(), astc_src: Vec::new(), astc_dst_bytes: 0, astc_blocks: 0, astc_pending: Default::default(), astc_in_encoder: 0, blit: None, mip_pipelines: HashMap::new(), mip_sampler: None,
             occlusion_set: None, occlusion_next: 0, occlusion_active: None, occlusion_pass_slot: None,
@@ -1193,11 +1199,11 @@ impl Gpu {
                     self.hdr(5).store(0, Ordering::SeqCst);
                     continue;
                 }
-                if !self.warm.is_empty() {
+                if !self.warm.as_ref().is_none_or(|r| r.is_empty()) {
                     self.warm_step(Duration::from_millis(3));
                     while let Ok((done, pipeline)) = self.pipe_results.try_recv() { self.finish_pipeline(done, pipeline); }
                 }
-                let timeout = if self.pending_maps.is_empty() && self.inflight.load(Ordering::SeqCst) == 0 && self.warm.is_empty() { 100 } else { 1 };
+                let timeout = if self.pending_maps.is_empty() && self.inflight.load(Ordering::SeqCst) == 0 && self.warm.as_ref().is_none_or(|r| r.is_empty()) { 100 } else { 1 };
                 let _ = self.mem.atomic_wait32(self.ring, tail as u32, Some(Duration::from_millis(timeout)));
                 self.hdr(5).store(0, Ordering::SeqCst);
                 continue;
@@ -1464,7 +1470,14 @@ impl Gpu {
     }
 
     fn upload_buffer(&mut self, id: u32, offset: u64, size: u64, data_addr: u64, no_overwrite: bool) {
-        let data = self.bytes(data_addr, size).to_vec();
+        // This payload is inline in the shared command ring. run_commands does
+        // not publish the advanced tail until exec returns. write_buffer copies
+        // into wgpu-owned staging before returning, so no host snapshot is needed.
+        let range = crate::gpu_memory::upload_range(self.mem.data_size(), data_addr, size)
+            .expect("buffer upload outside guest memory");
+        let data = unsafe { std::slice::from_raw_parts(self.base.add(range.start), range.len()) };
+        self.upload_snapshot_bytes_avoided = self.upload_snapshot_bytes_avoided.saturating_add(size);
+        self.upload_snapshot_peak_avoided = self.upload_snapshot_peak_avoided.max(size);
         let used = self.used(id);
         let Some(b) = self.buf_mut(id) else { return };
         if let Some(sh) = b.shadow.as_mut() {
@@ -1500,14 +1513,22 @@ impl Gpu {
             self.upload_bc1_astc(id, tex, mip, origin, w, h, d.max(1), bpr, rows.max(1), data_addr, size);
             return;
         }
-        let mut data = self.bytes(data_addr, size).to_vec();
+        let range = crate::gpu_memory::upload_range(self.mem.data_size(), data_addr, size)
+            .expect("texture upload outside guest memory");
+        self.upload_snapshot_bytes_avoided = self.upload_snapshot_bytes_avoided.saturating_add(size);
+        self.upload_snapshot_peak_avoided = self.upload_snapshot_peak_avoided.max(size);
+        // Keep native BC/ordinary texture uploads borrowed. Only conversions own
+        // output storage; the command-ring tail still protects their input bytes.
+        let mut data = std::borrow::Cow::Borrowed(self.bytes(range.start as u64, range.len() as u64));
         let (mut bpr, mut rows, mut w, mut h) = (bpr, rows, w, h);
         if let Some(bc) = bc {
             let m = tex.size().mip_level_size(mip, tex.dimension());
             w = w.min(m.width.saturating_sub(x));
             h = h.min(m.height.saturating_sub(y));
             if w == 0 || h == 0 { return; }
-            (data, bpr) = bc_decode(bc, &data, bpr, rows.max(1), d.max(1), w, h);
+            let (decoded, pitch) = bc_decode(bc, &data, bpr, rows.max(1), d.max(1), w, h);
+            data = std::borrow::Cow::Owned(decoded);
+            bpr = pitch;
             rows = h;
         }
         if half != 0 {
@@ -1521,7 +1542,7 @@ impl Gpu {
                     out.extend_from_slice(&f32_to_f16(v).to_le_bytes());
                 }
             }
-            data = out;
+            data = std::borrow::Cow::Owned(out);
             bpr = (row * 2) as u32;
             rows = h;
         }
@@ -1532,7 +1553,7 @@ impl Gpu {
                     out[(r * w as usize + c) * 4 + 3] = data.get(r * bpr as usize + c).copied().unwrap_or(0);
                 }
             }
-            data = out;
+            data = std::borrow::Cow::Owned(out);
             bpr = w * 4;
         }
         self.queue.write_texture(
@@ -2310,10 +2331,11 @@ impl Gpu {
                     let buf = self.device.create_buffer(&BufferDescriptor { label: Some("uniform ring"), size: RING_CHUNK * FRAME_SLOTS as u64, usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST, mapped_at_creation: false });
                     let id = self.uid();
                     self.ubo_shared.push((buf, id));
+                    self.ubo_staging.push(crate::gpu_memory::UniformStage::default());
                 }
                 let (buf, id) = self.ubo_shared[self.ubo_chunk].clone();
                 while self.ubo_slots[slot].len() <= self.ubo_chunk {
-                    self.ubo_slots[slot].push(Chunk { buf: buf.clone(), id, base: slot as u64 * RING_CHUNK, stage: Vec::new(), lo: u64::MAX, hi: 0 });
+                    self.ubo_slots[slot].push(Chunk { buf: buf.clone(), id, base: slot as u64 * RING_CHUNK });
                 }
             }
         }
@@ -2322,13 +2344,10 @@ impl Gpu {
         (self.ubo_chunk, off)
     }
     fn flush_uniforms(&mut self) {
-        for slot in &mut self.ubo_slots {
-            for c in slot.iter_mut() {
-                if c.lo >= c.hi { continue; }
-                let hi = ((c.hi + 3) & !3).min(c.stage.len() as u64);
-                self.queue.write_buffer(&c.buf, c.base + c.lo, &c.stage[c.lo as usize..hi as usize]);
-                c.lo = u64::MAX;
-                c.hi = 0;
+        for (i, stage) in self.ubo_staging.iter_mut().enumerate() {
+            if let Some((offset, bytes)) = stage.take_dirty() {
+                let c = &self.ubo_slots[self.ubo_slot][i];
+                self.queue.write_buffer(&c.buf, c.base + offset, bytes);
             }
         }
     }
@@ -2340,14 +2359,8 @@ impl Gpu {
             return None;
         }
         let (ci, off) = self.uniform_alloc(pack.size);
-        let end = (off + pack.size) as usize;
-        let mut stage_buf = {
-            let chunk = &mut self.ubo_slots[self.ubo_slot][ci];
-            if chunk.stage.len() < end { chunk.stage.resize((end.max(262144)).next_power_of_two().min(RING_CHUNK as usize), 0); }
-            std::mem::take(&mut chunk.stage)
-        };
-        let block = &mut stage_buf[off as usize..end];
-        block.fill(0);
+        let mut stage_buf = std::mem::take(&mut self.ubo_staging[ci]);
+        let block = stage_buf.prepare(off as usize, pack.size as usize, RING_CHUNK as usize, self.presents);
         for m in &pack.members {
             let (cb_buf, cb_first) = self.s.cb[stage].get(m.binding as usize).map(|c| (c.buf, c.first)).unwrap_or_default();
             if let Some(Buf { shadow: Some(sh), size, .. }) = self.buf(cb_buf) {
@@ -2358,10 +2371,7 @@ impl Gpu {
                 }
             }
         }
-        let chunk = &mut self.ubo_slots[self.ubo_slot][ci];
-        chunk.stage = stage_buf;
-        chunk.lo = chunk.lo.min(off);
-        chunk.hi = chunk.hi.max(end as u64);
+        self.ubo_staging[ci] = stage_buf;
         Some((ci, off))
     }
 
@@ -2425,6 +2435,7 @@ impl Gpu {
         let mut key: Vec<u64> = Vec::with_capacity(bindings.len() * 2 + 3);
         key.extend([bgl.1, prog.uid, stage as u64]);
         let mut dyn_off = None;
+        let mut uniform = None;
         let cloud_fix = stage == 1 && prog.label.starts_with("cascadeshadows_rendering") && (prog.label.contains("CloudShadows") || prog.label.contains("CLOUDS")) && self.ramp_tex != 0 && {
             let id = *self.s.srv[1].get(6).unwrap_or(&0);
             self.view_obj(id).filter(|v| !v.is_buf).and_then(|v| self.tex(v.res)).map(|t| (t.desc.w, t.desc.h)) != Some((128, 1))
@@ -2444,6 +2455,7 @@ impl Gpu {
                     entries.push((0, Res::Buf(c.buf.clone(), 0, Some(prog.pack.as_ref().unwrap().size))));
                     dyn_off = Some((c.base + off) as u32);
                     key.push(c.id);
+                    uniform = Some(c.id);
                 }
                 Kind::Sampler | Kind::SamplerCmp => {
                     let sid = *self.s.smp[stage].get((b.binding as usize).wrapping_sub(16)).unwrap_or(&0);
@@ -2571,8 +2583,8 @@ impl Gpu {
                 }
             }
         }
-        if let Some((bg, uid)) = self.bind_groups.get(&key) {
-            return Some(BgResult { bg: bg.clone(), uid: *uid, dyn_off });
+        if let Some(entry) = self.bind_groups.get(&key) {
+            return Some(BgResult { bg: entry.bg.clone(), uid: entry.uid, dyn_off });
         }
         let wentries: Vec<BindGroupEntry> = entries.iter().map(|(binding, r)| BindGroupEntry {
             binding: *binding,
@@ -2585,7 +2597,7 @@ impl Gpu {
         let bg = self.scoped(&format!("bind group {}", prog.label), |d| d.create_bind_group(&BindGroupDescriptor { label: None, layout: &bgl.0, entries: &wentries }))?;
         if self.bind_groups.len() > BG_LIMIT * 3 / 2 { self.bind_groups.clear(); }
         let uid = self.uid();
-        self.bind_groups.insert(key, (bg.clone(), uid));
+        self.bind_groups.insert(key, CachedBindGroup { bg: bg.clone(), uid, uniform });
         Some(BgResult { bg, uid, dyn_off })
     }
 
@@ -2783,21 +2795,38 @@ impl Gpu {
 
     fn load_recipes(&mut self) {
         if !*PIPE_CACHE { return; }
-        let Ok(text) = std::fs::read_to_string(self.recipe_path()) else { return };
-        self.recipe_bytes = text.len() as u64;
-        self.warm = text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
-        log(&format!("pipeline cache: {} recipes to build during loading", self.warm.len()));
+        let recipes = match crate::pipeline_recipes::Recipes::open(&self.recipe_path()) {
+            Ok(recipes) => recipes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+            Err(e) => { log(&format!("pipeline cache warmup unavailable: {e}; required draws compile normally")); return; }
+        };
+        self.recipe_bytes = recipes.bytes();
+        if recipes.is_empty() { return; }
+        log(&format!("pipeline cache: streaming {} bytes of recipes during loading; one parsed recipe at a time", self.recipe_bytes));
+        self.warm = Some(recipes);
         self.warm_t0 = Some(Instant::now());
     }
 
     fn warm_step(&mut self, budget: Duration) {
         let start = Instant::now();
         while start.elapsed() < budget && self.pipe_pending.len() < 8 {
-            let Some(r) = self.warm.pop_front() else { break };
-            if self.warm_one(&r).is_some() { self.warmed += 1; }
+            let Some(reader) = self.warm.as_mut() else { break };
+            match reader.next_recipe() {
+                Ok(Some(r)) => { if self.warm_one(&r).is_some() { self.warmed += 1; } }
+                Ok(None) => { if self.warm.as_ref().is_none_or(|r| r.is_empty()) { break; } }
+                Err(e) => {
+                    log(&format!("pipeline cache read failed: {e}; remaining prewarm deferred to required draws"));
+                    self.warm = None;
+                    break;
+                }
+            }
         }
-        if self.warm.is_empty() {
-            if let Some(t0) = self.warm_t0.take() { log(&format!("pipeline cache: built {} pipelines in {:.1} s", self.warmed, t0.elapsed().as_secs_f64())); }
+        if self.warm.as_ref().is_none_or(|r| r.is_empty()) {
+            if let Some(t0) = self.warm_t0.take() {
+                let (malformed, peak_line) = self.warm.as_ref().map_or((0, 0), |r| (r.malformed(), r.peak_line()));
+                log(&format!("pipeline cache: queued {} pipelines in {:.1} s; malformed recipe lines {malformed}, peak line {peak_line} bytes; streaming scratch released", self.warmed, t0.elapsed().as_secs_f64()));
+            }
+            self.warm = None;
         }
     }
 
@@ -3745,12 +3774,30 @@ impl Gpu {
             let _ = self.device.poll(PollType::Wait { submission_index: Some(idx), timeout: None });
         }
         self.process_maps(false);
+        if crate::memory_budget::take_reclaim_request() { self.reclaim_cold_uniform_chunk(); }
+    }
+
+    // A pressure request retires at most one long-unused trailing chunk.
+    // Drop handles rather than destroy resources: recorded/in-flight wgpu work
+    // retains ownership. No global completion wait or hot pipeline eviction.
+    fn reclaim_cold_uniform_chunk(&mut self) {
+        let Some(index) = self.ubo_shared.len().checked_sub(1) else { return };
+        if index == 0 || !self.ubo_staging[index].cold(self.presents) { return; }
+        let uid = self.ubo_shared[index].1;
+        let bytes = self.ubo_staging[index].retained_bytes() as u64;
+        self.bind_groups.retain(|_, entry| entry.uniform != Some(uid));
+        for slot in &mut self.ubo_slots { slot.truncate(index); }
+        self.ubo_staging.truncate(index);
+        self.ubo_shared.truncate(index);
+        self.uniform_reclaimed_bytes += bytes + RING_CHUNK * FRAME_SLOTS as u64;
+        log(&format!("memory pressure: retired cold uniform chunk: host {} bytes, GPU logical {} bytes; in-flight ownership retained by wgpu", bytes, RING_CHUNK * FRAME_SLOTS as u64));
     }
 
     fn log_fps(&mut self) {
         let now = Instant::now();
         let dt = now.duration_since(self.fps_t0).as_secs_f64();
         if dt >= 10.0 {
+            self.publish_memory_census();
             let frames = self.presents - self.fps_n0;
             let resident = if *MEM_STATS { format!(" ({} MB resident)", crate::heap_resident_mb()) } else { String::new() };
             let malloc = if *MEM_STATS { format!(", malloc {} MB", crate::malloc_mb()) } else { String::new() };
@@ -3784,6 +3831,39 @@ impl Gpu {
             self.fps_d0 = self.draws;
         }
     }
+    // One ownership walk per existing ten-second heartbeat, never per draw.
+    // These logical/capacity scopes overlap Metal/process counters and must not
+    // be added to them. Native driver padding and queued-retirement are unknown.
+    fn publish_memory_census(&self) {
+        let staging = self.ubo_staging.iter().map(|s| s.retained_bytes() as u64).sum::<u64>();
+        let uniforms = self.ubo_shared.len() as u64 * RING_CHUNK * FRAME_SLOTS as u64;
+        let (mut objects, mut buffers, mut textures, mut mirrors, mut proxies) = (0u64, 0u64, 0u64, 0u64, 0u64);
+        for object in self.objs.iter().flatten() {
+            objects += 1;
+            match object.as_ref() {
+                Obj::Buf(b) => {
+                    buffers += b.bytes + b.counter.as_ref().map(Buffer::size).unwrap_or(0);
+                    mirrors += b.shadow.as_ref().map(|v| v.capacity() as u64).unwrap_or(0);
+                }
+                Obj::Tex(t) => {
+                    textures += crate::gpu_memory::texture_bytes(&t.tex);
+                    for p in [&t.proxy_depth, &t.proxy_stencil, &t.proxy_fdepth, &t.proxy_half].into_iter().flatten() {
+                        proxies += crate::gpu_memory::texture_bytes(&p.tex);
+                    }
+                }
+                _ => {}
+            }
+        }
+        crate::memory_budget::GPU_STAGING_BYTES.store(staging, Ordering::Relaxed);
+        crate::memory_budget::GPU_UNIFORM_BYTES.store(uniforms, Ordering::Relaxed);
+        crate::memory_budget::GPU_BUFFER_BYTES.store(buffers, Ordering::Relaxed);
+        crate::memory_budget::GPU_TEXTURE_ESTIMATE_BYTES.store(textures + proxies, Ordering::Relaxed);
+        crate::memory_budget::GPU_OBJECTS.store(objects, Ordering::Relaxed);
+        crate::memory_budget::GPU_CENSUS_PRESENT.store(self.presents, Ordering::Relaxed);
+        log(&format!("GPU ownership census: host uniform staging {staging}, constant mirrors {mirrors}, ASTC input capacity {}; GPU logical uniform {uniforms}, engine buffers/counters {buffers}, texture texels {textures}, proxy texels {proxies} bytes; cold uniform retired {} bytes. Texture figures exclude driver padding/residency; do not add to Metal/process footprint. Removed upload snapshot copies: {} cumulative bytes, {} max single payload bytes (not retained RAM).",
+            self.astc_src.capacity(), self.uniform_reclaimed_bytes, self.upload_snapshot_bytes_avoided, self.upload_snapshot_peak_avoided));
+    }
+
     fn log_stats(&self) {
         log(&format!("stats: draws {} (skipped {}), presents {}, objects {}, pipelines {}", self.draws, self.skipped, self.presents, self.objs.iter().filter(|o| o.is_some()).count(), self.pipelines.len()));
     }
@@ -3836,3 +3916,7 @@ fn radar_compat(source: &str) -> Option<String> {
         None
     } else { Some(text) }
 }
+
+#[cfg(test)]
+#[path = "gpu_memory_integration_tests.rs"]
+mod memory_integration_tests;

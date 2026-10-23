@@ -191,3 +191,19 @@ fn frozen_manifest_survives_provider_metadata_replacement() {
         .unwrap();
     assert_eq!(reader.manifest_bytes(), frozen);
 }
+
+#[test]
+fn shared_frozen_manifest_has_one_payload_allocation() {
+    let f = Fixture::new();
+    fs::write(f.0.join("data/a"), b"original").unwrap();
+    f.manifest(serde_json::json!([["a", 8, 0]]));
+    let frozen: std::sync::Arc<[u8]> = fs::read(f.0.join("data/manifest.json")).unwrap().into();
+    let payload = frozen.as_ptr();
+    let mut reader = Reader::open_shared_frozen(&f.0.join("data"), Some(frozen.clone())).unwrap();
+    assert_eq!(reader.manifest_bytes().as_ptr(), payload);
+    assert_eq!(std::sync::Arc::strong_count(&frozen), 2);
+    drop(frozen);
+    // Worker ownership remains valid after the launch-side reference is dropped.
+    reader.read(0, 0, 8, &AtomicBool::new(false), |b| { assert_eq!(b,b"original"); Ok(()) }).unwrap();
+    assert_eq!(reader.manifest_bytes().as_ptr(), payload);
+}

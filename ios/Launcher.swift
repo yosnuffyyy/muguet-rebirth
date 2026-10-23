@@ -7,6 +7,48 @@ import UniformTypeIdentifiers
 import os
 import Metal
 
+@_silgen_name("rebirth_memory_pressure")
+private func publishMemoryPressure(_ level: UInt32)
+
+// One utility-queue observer for the process lifetime. The handler publishes
+// only an atomic advisory level; resource owners reclaim at safe boundaries.
+private final class RebirthMemoryPressure {
+    static let shared = RebirthMemoryPressure()
+    private let source: DispatchSourceMemoryPressure
+    private init() {
+        source = DispatchSource.makeMemoryPressureSource(eventMask: [.normal, .warning, .critical], queue: DispatchQueue.global(qos: .utility))
+        source.setEventHandler { [weak self] in
+            guard let event = self?.source.data else { return }
+            publishMemoryPressure(event.contains(.critical) ? 2 : event.contains(.warning) ? 1 : 0)
+        }
+        source.activate()
+    }
+}
+@_cdecl("muguet_memory_monitor_start")
+public func muguetMemoryMonitorStart() { _ = RebirthMemoryPressure.shared }
+
+// Exact byte counters with independent scopes. MAX denotes unavailable.
+// Called on the diagnostics worker, never the render/audio callback.
+@_cdecl("muguet_memory_details")
+public func muguetMemoryDetails(_ values: UnsafeMutablePointer<UInt64>) {
+    var info = task_vm_info_data_t()
+    var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
+    let result = withUnsafeMutablePointer(to: &info) {
+        $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+            task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+        }
+    }
+    values[0] = result == KERN_SUCCESS ? info.phys_footprint : UInt64.max
+    values[1] = result == KERN_SUCCESS ? info.resident_size : UInt64.max
+    values[2] = result == KERN_SUCCESS ? info.compressed : UInt64.max
+    values[3] = UInt64(os_proc_available_memory())
+    values[4] = RebirthMemoryDevice.device.map { UInt64($0.currentAllocatedSize) } ?? UInt64.max
+    values[5] = UInt64(ProcessInfo.processInfo.thermalState.rawValue)
+}
+private enum RebirthMemoryDevice {
+    static let device = MTLCreateSystemDefaultDevice()
+}
+
 // Live advisory headroom, separate from footprint and guest address space.
 @_cdecl("muguet_memory_snapshot")
 public func muguetMemorySnapshot(_ footprint: UnsafeMutablePointer<UInt64>) -> UInt64 {
