@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use wasmtime::SharedMemory;
 use wgpu::util::DeviceExt;
 use wgpu::*;
+use crate::gpu_timing::{FrameTelemetry, Timing};
 
 const RING_DATA: u64 = 64;
 const BIND_SRV: u32 = 0x8;
@@ -581,7 +582,6 @@ struct Tex {
     bc: Option<TextureFormat>,
     half: usize,
     enc: u64,
-    in_bg: bool,
     proxy_depth: Option<Proxy>,
     proxy_stencil: Option<Proxy>,
     proxy_fdepth: Option<Proxy>,
@@ -598,7 +598,6 @@ struct Buf {
     shadow: Option<Vec<u8>>,
     version: u64,
     enc: u64,
-    in_bg: bool,
     counter: Option<Buffer>,
 }
 #[derive(Clone, Copy)]
@@ -861,7 +860,10 @@ pub struct Gpu {
     pending_skips0: u64,
     pipe_wait_left: Duration,
     compute: HashMap<String, Option<(ComputePipeline, BindGroupLayout, u64, Rc<Program>)>>,
-    bind_groups: FxHashMap<Vec<u64>, CachedBindGroup>,
+    bind_groups: crate::gpu_lifetime::DependencyCache<CachedBindGroup>,
+    view_owners: crate::gpu_lifetime::ViewOwners,
+    retired_binding_groups: u64,
+    retired_derived_payload: u64,
     ubo_slots: Vec<Vec<Chunk>>,
     ubo_shared: Vec<(Buffer, u64)>,
     // Queue writes copy synchronously: CPU bytes need one owner, not one per GPU frame slot.
@@ -909,6 +911,10 @@ pub struct Gpu {
     counter_src: Option<Buffer>,
     counter_slot: u32,
     frame_slot_done: Vec<Option<SubmissionIndex>>,
+    timing: FrameTelemetry,
+    slot_waits: u64,
+    ring_peak_bytes: u64,
+    ring_size: u64,
     last_submit: Option<SubmissionIndex>,
     vb_avail: [u64; 16],
     dbg_idx: u64,
@@ -947,7 +953,7 @@ pub fn max_msaa() -> u32 {
 }
 
 impl Gpu {
-    fn new(mem: SharedMemory, ring: u64, _size: u64, dbg: u64, handoff: Option<SurfaceHandoff>) -> anyhow::Result<Gpu> {
+    fn new(mem: SharedMemory, ring: u64, size: u64, dbg: u64, handoff: Option<SurfaceHandoff>) -> anyhow::Result<Gpu> {
         let (base, _) = mem_base_len(&mem);
         let (instance, surface) = match handoff {
             Some(h) => (h.instance, Some((h.surface, h.window))),
@@ -1041,13 +1047,15 @@ impl Gpu {
             base, mem, ring, device, queue, adapter, surface, surface_format, surface_size: (0, 0),
             objs: Vec::new(), enc: None, enc_epoch: 1, pass: None, pass_key: None, pass_info: None, pass_st: PassSt::default(),
             map_programs: HashMap::new(), warm: Default::default(), warm_programs: HashMap::new(), warmed: 0, warm_t0: None, recipe_bytes: 0, s: State::new(), pdirty: true, last_pl: None, shader_index, shader_dir, next_uid: 1,
-            bgl_cache: FxHashMap::default(), empty_bgl: None, pipelines: FxHashMap::default(), compute: HashMap::new(), bind_groups: FxHashMap::default(),
+            bgl_cache: FxHashMap::default(), empty_bgl: None, pipelines: FxHashMap::default(), compute: HashMap::new(), bind_groups: Default::default(),
+            view_owners: Default::default(), retired_binding_groups: 0, retired_derived_payload: 0,
             ubo_slots: (0..FRAME_SLOTS).map(|_| Vec::new()).collect(), ubo_shared: Vec::new(), ubo_staging: Vec::new(), upload_snapshot_bytes_avoided: 0, upload_snapshot_peak_avoided: 0, uniform_reclaimed_bytes: 0, uav_staged_clears: 0, uav_snapshot_bytes_avoided: 0, uav_snapshot_peak_avoided: 0, ubo_slot: 0, ubo_chunk: 0, ubo_off: 0,
             dummy_tex: HashMap::new(), dummy_smp: None, dummy_cmp: None, dummy_bufs: HashMap::new(), zero_vb: None, zero_src: None, scratch: None,
             proxy_pipelines: HashMap::new(), unfilt: HashMap::new(), nearest: HashMap::new(), ramp_tex: 0, ramp_view: None, white_view: None, f2d_pipeline: None, bc1_astc: None, astc_jobs: Vec::new(), astc_src: Vec::new(), astc_dst_bytes: 0, astc_blocks: 0, astc_pending: Default::default(), astc_in_encoder: 0, blit: None, mip_pipelines: HashMap::new(), mip_sampler: None,
             occlusion_set: None, occlusion_next: 0, occlusion_active: None, occlusion_pass_slot: None,
             pending_resolve: Vec::new(), pending_events: Vec::new(), pending_maps: Vec::new(), counter_src: None, counter_slot: 0,
             frame_slot_done: (0..FRAME_SLOTS).map(|_| None).collect(), last_submit: None, vb_avail: [0; 16],
+            timing: FrameTelemetry::new(), slot_waits: 0, ring_peak_bytes: 0, ring_size: size,
             dbg_idx: if dbg != 0 { dbg + 424 } else { 0 },
             draws: 0, skipped: 0, presents: 0, pipe_creates: 0, fps_t0: Instant::now(), fps_n0: 0, fps_d0: 0, errors, inflight: Arc::new(AtomicU64::new(0)), submits: 0, submits0: 0, passes: 0, passes0: 0,
         })
@@ -1084,9 +1092,13 @@ impl Gpu {
             log_once("hugeid", &format!("object id {id} out of range: ignored"));
             return;
         }
+        // Numeric protocol IDs can be reused. Retire all cache ownership of the
+        // previous native object before publishing the new generation.
+        if self.obj(id).is_some() { self.destroy(id); }
         if self.objs.len() <= i {
             self.objs.resize_with(i + 1, || None);
         }
+        if let Obj::Srv(v) | Obj::Uav(v) = &o { self.view_owners.insert(id, v.res); }
         self.objs[i] = Some(Box::new(o));
     }
     fn tex(&self, id: u32) -> Option<&Tex> {
@@ -1160,10 +1172,19 @@ impl Gpu {
         self.flush_astc();
         self.astc_in_encoder = 0;
         self.end_pass();
+        // CPU command preparation can proceed after PRESENT. The previous use
+        // of this slot must complete before any queued uniform write/submit.
+        // Keep the original three slots and exact submission fence; no extra
+        // GPU frame is admitted and no live uniform bytes can be overwritten.
+        self.wait_frame_slot();
         self.flush_uniforms();
         let resolves = if self.pending_resolve.is_empty() { None } else { self.record_resolves() };
         if let Some(enc) = self.enc.take() {
+            let previous_phase = crate::startup::GPU_PHASE.swap(3, Ordering::Relaxed);
+            let started = Instant::now();
             let idx = self.queue.submit([enc.finish()]);
+            self.timing.record(Timing::Submit, started.elapsed());
+            crate::startup::GPU_PHASE.store(previous_phase, Ordering::Relaxed);
             self.last_submit = Some(idx);
             self.submits += 1;
             self.on_submitted();
@@ -1175,6 +1196,31 @@ impl Gpu {
         self.enc_epoch += 1;
     }
 
+    fn wait_frame_slot(&mut self) {
+        if let Some(idx) = self.frame_slot_done[self.ubo_slot].take() {
+            let previous_phase = crate::startup::GPU_PHASE.swap(2, Ordering::Relaxed);
+            let started = Instant::now();
+            let result = self.poll_device(PollType::Wait { submission_index: Some(idx), timeout: None });
+            self.timing.record(Timing::SlotWait, started.elapsed());
+            self.slot_waits += 1;
+            crate::startup::GPU_PHASE.store(previous_phase, Ordering::Relaxed);
+            if let Err(error) = result {
+                crate::host::report_fatal(format!("frame-slot completion failed before uniform reuse: {error:?}"));
+                panic!("unsafe uniform reuse prevented after frame-slot wait failure");
+            }
+        }
+    }
+
+    fn poll_device(&mut self, how: PollType) -> Result<PollStatus, PollError> {
+        let previous_phase = crate::startup::GPU_PHASE.load(Ordering::Relaxed);
+        if previous_phase != 2 { crate::startup::GPU_PHASE.store(8, Ordering::Relaxed); }
+        let started = Instant::now();
+        let result = self.device.poll(how);
+        self.timing.record(Timing::Poll, started.elapsed());
+        crate::startup::GPU_PHASE.store(previous_phase, Ordering::Relaxed);
+        result
+    }
+
     fn run(&mut self) -> ! {
         self.load_recipes();
         let mut tail = RING_DATA as i32;
@@ -1183,16 +1229,25 @@ impl Gpu {
         log("running");
         crate::rebirth::logs::checkpoint(&format!("graphics command ring ready at 0x{:x}", self.ring), false);
         loop {
+            crate::startup::GPU_PHASE.store(1, Ordering::Relaxed);
             if SUSPENDED.load(Ordering::Relaxed) {
-                let _ = self.device.poll(PollType::Wait { submission_index: None, timeout: None });
+                let _ = self.poll_device(PollType::Wait { submission_index: None, timeout: None });
+                crate::startup::GPU_PHASE.store(9, Ordering::Relaxed);
                 while SUSPENDED.load(Ordering::Relaxed) { std::thread::sleep(Duration::from_millis(50)); }
+                crate::startup::GPU_PHASE.store(1, Ordering::Relaxed);
             }
             self.process_maps(false);
             self.apply_query_results();
             if self.inflight.load(Ordering::SeqCst) > 0 {
-                let _ = self.device.poll(PollType::Poll);
+                let _ = self.poll_device(PollType::Poll);
             }
             let head = self.hdr(0).load(Ordering::SeqCst);
+            if head >= RING_DATA as i32 && tail >= RING_DATA as i32
+                && (head as u64) < self.ring_size && (tail as u64) < self.ring_size {
+                let occupied = if head >= tail { (head-tail) as u64 }
+                    else { self.ring_size-tail as u64+head as u64-RING_DATA };
+                self.ring_peak_bytes = self.ring_peak_bytes.max(occupied);
+            }
             if head == tail {
                 if !self.pending_events.is_empty() || !self.pending_resolve.is_empty() {
                     self.flush();
@@ -1203,11 +1258,17 @@ impl Gpu {
                     continue;
                 }
                 if !self.warm.as_ref().is_none_or(|r| r.is_empty()) {
+                    crate::startup::GPU_PHASE.store(7, Ordering::Relaxed);
                     self.warm_step(Duration::from_millis(3));
                     while let Ok((done, pipeline)) = self.pipe_results.try_recv() { self.finish_pipeline(done, pipeline); }
+                    crate::startup::GPU_PHASE.store(1, Ordering::Relaxed);
                 }
                 let timeout = if self.pending_maps.is_empty() && self.inflight.load(Ordering::SeqCst) == 0 && self.warm.as_ref().is_none_or(|r| r.is_empty()) { 100 } else { 1 };
+                crate::startup::GPU_PHASE.store(0, Ordering::Relaxed);
+                let started = Instant::now();
                 let _ = self.mem.atomic_wait32(self.ring, tail as u32, Some(Duration::from_millis(timeout)));
+                crate::startup::GPU_PHASE.store(1, Ordering::Relaxed);
+                self.timing.record(Timing::ProducerIdle, started.elapsed());
                 self.hdr(5).store(0, Ordering::SeqCst);
                 continue;
             }
@@ -1219,6 +1280,8 @@ impl Gpu {
 
     fn run_commands(&mut self, mut tail: i32, head: i32) -> i32 {
         let ring_w = self.ring / 4;
+        crate::startup::GPU_PHASE.store(1, Ordering::Relaxed);
+        let mut segment_started = Instant::now();
         let mut since = 0u32;
         let mut executed = 0i32;
         let mut first = crate::startup::GPU_COMMANDS.load(Ordering::Relaxed) == 0;
@@ -1232,7 +1295,17 @@ impl Gpu {
             }
             let p = base + 2;
             if first { crate::rebirth::logs::checkpoint(&format!("first GPU command opcode={op} words={n}"), false); first = false; }
-            self.exec(op, p, n);
+            if op == 7 {
+                self.timing.record(Timing::CommandWall, segment_started.elapsed());
+                self.exec(op, p, n);
+                segment_started = Instant::now();
+            } else if op == 42 {
+                let started = Instant::now();
+                crate::startup::GPU_PHASE.store(6, Ordering::Relaxed);
+                self.exec(op, p, n);
+                self.timing.record(Timing::Readback, started.elapsed());
+                crate::startup::GPU_PHASE.store(1, Ordering::Relaxed);
+            } else { self.exec(op, p, n); }
             executed += 1;
             tail += (n * 4 + 8) as i32;
             since += 1;
@@ -1244,11 +1317,12 @@ impl Gpu {
                 self.hdr(1).store(tail, Ordering::SeqCst);
                 let _ = self.mem.atomic_notify(self.ring + 4, u32::MAX);
                 self.process_maps(false);
-                if self.inflight.load(Ordering::SeqCst) > 0 { let _ = self.device.poll(PollType::Poll); }
+                if self.inflight.load(Ordering::SeqCst) > 0 { let _ = self.poll_device(PollType::Poll); }
             }
         }
         crate::startup::GPU_COMMANDS.fetch_add(executed as u64, Ordering::Relaxed);
         self.hdr(3).fetch_add(executed, Ordering::Relaxed);
+        self.timing.record(Timing::CommandWall, segment_started.elapsed());
         tail
     }
 
@@ -1264,7 +1338,7 @@ impl Gpu {
             7 => self.present(u(0)),
             8 => {
                 self.flush();
-                let _ = self.device.poll(PollType::Wait { submission_index: None, timeout: None });
+                let _ = self.poll_device(PollType::Wait { submission_index: None, timeout: None });
                 let addr = u(0) as u64 + u(1) as u64 * 4294967296;
                 atomic(&self.mem, addr).store(u(2) as i32, Ordering::SeqCst);
                 let _ = self.mem.atomic_notify(addr, u32::MAX);
@@ -1383,10 +1457,26 @@ impl Gpu {
         if self.is_bound(id) { self.pdirty = true; }
         if self.obj(id).is_none() { return; }
         if self.used(id) { self.flush(); }
+        // Drop only cache handles. Submitted/encoded work retains its own wgpu
+        // references, including proxy textures and UAV counters, until safe.
+        self.retired_binding_groups += self.bind_groups.invalidate(id) as u64;
+        self.nearest.remove(&id);
+        for view in self.view_owners.views(id) {
+            if let Some(v) = self.view_obj_mut(view) { v.views.clear(); }
+        }
+        self.view_owners.remove(id);
         if let Some(o) = self.objs.get_mut(id as usize).and_then(|o| o.take()) {
             match *o {
-                Obj::Tex(t) => { self.bc_live.remove(&id); t.tex.destroy(); }
-                Obj::Buf(b) => { if let Some(g) = b.gpu { g.destroy(); } }
+                Obj::Tex(t) => {
+                    self.retired_derived_payload += [&t.proxy_depth, &t.proxy_stencil, &t.proxy_fdepth, &t.proxy_half]
+                        .into_iter().flatten().map(|p| crate::gpu_memory::texture_bytes(&p.tex)).sum::<u64>();
+                    self.bc_live.remove(&id);
+                    t.tex.destroy();
+                }
+                Obj::Buf(b) => {
+                    self.retired_derived_payload += b.counter.as_ref().map(Buffer::size).unwrap_or(0);
+                    if let Some(g) = b.gpu { g.destroy(); }
+                }
                 Obj::Query(q) => { self.live_queries.remove(&q.addr); }
                 _ => {}
             }
@@ -1437,7 +1527,7 @@ impl Gpu {
             label: None, size, mip_level_count: mips.max(1), sample_count: samples, dimension, format: m.format, usage, view_formats: &views,
         };
         let bc_src = m.bc.or(if is_bc(m.format) { Some(m.format) } else { None }).map(|f| f.remove_srgb_suffix());
-        if let Some(f) = bc_src {
+        let bc_accounting = bc_src.map(|f| {
             let (layers, mut packed, mut expanded) = (size.depth_or_array_layers as u64, 0u64, 0u64);
             let bb = f.block_copy_size(None).unwrap_or(16) as u64;
             let px = if m.bc.is_some() { m.format.block_copy_size(None).unwrap_or(4) as u64 } else { 0 };
@@ -1446,19 +1536,20 @@ impl Gpu {
                 packed += mw.div_ceil(4) * mh.div_ceil(4) * bb * layers;
                 expanded += if astc { mw.div_ceil(4) * mh.div_ceil(4) * 16 * layers } else { mw * mh * px * layers };
             }
-            self.bc_live.insert(id, (f, packed, expanded));
-        }
+            (f, packed, expanded)
+        });
         let tex = match self.scoped(&format!("createTexture id={id} dim={dim} {}x{}x{} mips={mips} dxgi={dxgi} bind=0x{bind:x} samples={samples} -> {:?} usage {:?}", size.width, size.height, size.depth_or_array_layers, m.format, usage), |d| d.create_texture(&desc)) { Some(t) => t, None => return };
         self.set_obj(id, Obj::Tex(Tex {
             tex, desc: TexDesc { w: size.width, h: size.height, d: size.depth_or_array_layers, mips: mips.max(1), samples, dim: dimension, skip },
-            format: m.format, views: HashMap::new(), a8: m.a8, bc: m.bc, half, enc: 0, in_bg: false, proxy_depth: None, proxy_stencil: None,
+            format: m.format, views: HashMap::new(), a8: m.a8, bc: m.bc, half, enc: 0, proxy_depth: None, proxy_stencil: None,
             proxy_fdepth: None, proxy_half: None, blit_bg: None, mip_passes: None, astc,
         }));
+        if let Some(accounting) = bc_accounting { self.bc_live.insert(id, accounting); }
     }
 
     fn create_buffer(&mut self, id: u32, size: u32, bind: u32, misc: u32, stride: u32) {
         let size = size as u64;
-        let mut b = Buf { size, stride, gpu: None, bytes: 0, shadow: None, version: 0, enc: 0, in_bg: false, counter: None };
+        let mut b = Buf { size, stride, gpu: None, bytes: 0, shadow: None, version: 0, enc: 0, counter: None };
         if bind & 4 != 0 { b.shadow = Some(vec![0u8; size as usize]); }
         let mut usage = BufferUsages::COPY_DST | BufferUsages::COPY_SRC;
         if bind & 1 != 0 { usage |= BufferUsages::VERTEX; }
@@ -2488,7 +2579,6 @@ impl Gpu {
                         if let Some(v) = self.ramp_view() {
                             let r = self.ramp_tex;
                             self.use_tex(r);
-                            if let Some(t) = self.tex_mut(r) { t.in_bg = true; }
                             key.push(r as u64 | 1 << 41);
                             key.push(0);
                             entries.push((b.binding, Res::View(v)));
@@ -2510,7 +2600,6 @@ impl Gpu {
                         Some(v) => {
                             let res = self.view_obj(id).unwrap().res;
                             self.use_tex(res);
-                            if let Some(t) = self.tex_mut(res) { t.in_bg = true; }
                             key.push(id as u64);
                             key.push(0);
                             entries.push((b.binding, Res::View(v)));
@@ -2545,7 +2634,6 @@ impl Gpu {
                     };
                     if let Some((r, _, _)) = buf_id {
                         self.use_buf(r);
-                        if let Some(bo) = self.buf_mut(r) { bo.in_bg = true; }
                         key.push(id as u64);
                     } else {
                         key.push(0);
@@ -2580,7 +2668,6 @@ impl Gpu {
                     };
                     self.use_tex(res);
                     self.mark_color_dirty(res);
-                    if let Some(t) = self.tex_mut(res) { t.in_bg = true; }
                     key.push(uid as u64);
                     entries.push((b.binding, Res::View(v)));
                 }
@@ -2588,6 +2675,28 @@ impl Gpu {
         }
         if let Some(entry) = self.bind_groups.get(&key) {
             return Some(BgResult { bg: entry.bg.clone(), uid: entry.uid, dyn_off });
+        }
+        // Build dependency metadata only on misses. Uniform bytes are immutable
+        // snapshots, so their original constant buffers are not cache owners.
+        let mut owners = Vec::with_capacity(bindings.len() * 2);
+        for b in bindings {
+            let id = match b.kind {
+                Kind::Uniform => continue,
+                Kind::Sampler | Kind::SamplerCmp => {
+                    owners.push(*self.s.smp[stage].get((b.binding as usize).wrapping_sub(16)).unwrap_or(&0));
+                    continue;
+                }
+                Kind::Texture if cloud_fix && b.binding == 38 => { owners.push(self.ramp_tex); continue; }
+                Kind::Texture if cloud_fix && b.binding == 37 => continue,
+                Kind::Texture => *self.s.srv[stage].get((b.binding as usize).wrapping_sub(32)).unwrap_or(&0),
+                Kind::StorageTexture => *self.s.uav[stage].get((b.binding as usize).wrapping_sub(160)).unwrap_or(&0),
+                Kind::ReadOnlyStorage | Kind::Storage if b.binding >= 160 =>
+                    *self.s.uav[stage].get((b.binding - if b.binding >= 176 { 176 } else { 160 }) as usize).unwrap_or(&0),
+                Kind::ReadOnlyStorage | Kind::Storage =>
+                    *self.s.srv[stage].get((b.binding as usize).wrapping_sub(32)).unwrap_or(&0),
+            };
+            owners.push(id);
+            if let Some(v) = self.view_obj(id) { owners.push(v.res); }
         }
         let wentries: Vec<BindGroupEntry> = entries.iter().map(|(binding, r)| BindGroupEntry {
             binding: *binding,
@@ -2600,7 +2709,7 @@ impl Gpu {
         let bg = self.scoped(&format!("bind group {}", prog.label), |d| d.create_bind_group(&BindGroupDescriptor { label: None, layout: &bgl.0, entries: &wentries }))?;
         if self.bind_groups.len() > BG_LIMIT * 3 / 2 { self.bind_groups.clear(); }
         let uid = self.uid();
-        self.bind_groups.insert(key, CachedBindGroup { bg: bg.clone(), uid, uniform });
+        self.bind_groups.insert(key, CachedBindGroup { bg: bg.clone(), uid, uniform }, owners);
         Some(BgResult { bg, uid, dyn_off })
     }
 
@@ -2652,13 +2761,17 @@ impl Gpu {
     // merely because compilation exceeds a frame's latency budget.
     fn wait_required_pipeline(&mut self, key: &[i64]) -> Option<Rc<Pl>> {
         let start = Instant::now();
+        crate::startup::GPU_PHASE.store(7, Ordering::Relaxed);
         loop {
             if let Some(PipeEntry::Done(p)) = self.pipelines.get(key) {
                 if p.is_none() {
                     crate::host::report_fatal("required draw pipeline failed compilation; see pipeline diagnostic".into());
                     panic!("required draw pipeline failed");
                 }
-                return p.clone();
+                let result = p.clone();
+                self.timing.record(Timing::PipelineWait, start.elapsed());
+                crate::startup::GPU_PHASE.store(1, Ordering::Relaxed);
+                return result;
             }
             if start.elapsed() > Duration::from_secs(60) || crate::host::stop_reason().is_some() {
                 crate::host::report_fatal("required pipeline wait interrupted or exceeded 60 seconds".into());
@@ -3531,7 +3644,7 @@ impl Gpu {
 
     fn process_maps(&mut self, wait: bool) {
         if self.pending_maps.is_empty() { return; }
-        let _ = self.device.poll(if wait { PollType::Wait { submission_index: None, timeout: None } } else { PollType::Poll });
+        let _ = self.poll_device(if wait { PollType::Wait { submission_index: None, timeout: None } } else { PollType::Poll });
         let mut i = 0;
         while i < self.pending_maps.len() {
             if !self.pending_maps[i].done.load(Ordering::SeqCst) { i += 1; continue; }
@@ -3578,8 +3691,8 @@ impl Gpu {
         let _ = self.mem.atomic_notify(addr, u32::MAX);
     }
     fn create_query(&mut self, id: u32, qtype: u32, addr: u64) {
-        self.live_queries.insert(addr);
         self.set_obj(id, Obj::Query(QueryObj { qtype, addr, slots: vec![] }));
+        self.live_queries.insert(addr);
         if self.occlusion_set.is_none() {
             self.occlusion_set = Some(self.device.create_query_set(&QuerySetDescriptor { label: None, ty: QueryType::Occlusion, count: OCCLUSION_CAPACITY }));
         }
@@ -3653,8 +3766,6 @@ impl Gpu {
         for (addr, v, seq) in done { self.query_store(addr, v, seq); }
     }
     fn on_submitted(&mut self) {
-        let unmapped: Vec<usize> = self.pending_maps.iter().enumerate().filter(|(_, m)| matches!(m.kind, MapKind::Occlusion { .. }) && !m.done.load(Ordering::SeqCst)).map(|(i, _)| i).collect();
-        let _ = unmapped;
         if !self.pending_events.is_empty() {
             let evs = std::mem::take(&mut self.pending_events);
             let mem = self.mem.clone();
@@ -3698,6 +3809,7 @@ impl Gpu {
     }
 
     fn present(&mut self, id: u32) {
+        let command_started = Instant::now();
         if crate::startup::PRESENT_REQUESTS.fetch_add(1, Ordering::Relaxed) == 0 { crate::rebirth::logs::checkpoint("first PRESENT command received (not display completion)", false); }
         self.materialize_clears(id);
         let visible = !OCCLUDED.load(Ordering::Relaxed);
@@ -3736,11 +3848,15 @@ impl Gpu {
                     dev.create_bind_group(&BindGroupDescriptor { label: None, layout: &blit.get_bind_group_layout(0), entries: &[BindGroupEntry { binding: 0, resource: BindingResource::TextureView(&v) }] })
                 }).clone()
             };
+            crate::startup::GPU_PHASE.store(4, Ordering::Relaxed);
+            let acquired = Instant::now();
             let frame = match self.surface.as_ref().unwrap().0.get_current_texture() {
                 CurrentSurfaceTexture::Success(f) | CurrentSurfaceTexture::Suboptimal(f) => Some(f),
                 other => { log_once("surface", &format!("surface texture unavailable: {other:?}")); self.surface_size = (0, 0); None }
             };
             if let Some(frame) = frame {
+                self.timing.record(Timing::Acquire, acquired.elapsed());
+                crate::startup::GPU_PHASE.store(1, Ordering::Relaxed);
                 let view = frame.texture.create_view(&TextureViewDescriptor::default());
                 self.use_tex(id);
                 let probe = *crate::gpu_probe::ENABLED && crate::gpu_probe::selected(self.presents);
@@ -3764,9 +3880,15 @@ impl Gpu {
                 let after = if probe {crate::gpu_probe::encode(&dev,self.encoder(),&frame.texture)} else {None};
                 self.flush();
                 if probe {crate::gpu_probe::finish(before,0,self.presents);crate::gpu_probe::finish(after,1,self.presents);}
+                crate::startup::GPU_PHASE.store(5, Ordering::Relaxed);
+                let presented = Instant::now();
                 self.queue.present(frame);
+                self.timing.record(Timing::Present, presented.elapsed());
+                crate::startup::GPU_PHASE.store(1, Ordering::Relaxed);
                 if crate::startup::SURFACE_PRESENTS.fetch_add(1, Ordering::Relaxed) == 0 { crate::rebirth::logs::checkpoint("first surface queue.present returned; actual drawable completion and gameplay UNKNOWN", true); }
             } else {
+                self.timing.record(Timing::Acquire, acquired.elapsed());
+                crate::startup::GPU_PHASE.store(1, Ordering::Relaxed);
                 self.flush();
             }
         } else {
@@ -3776,25 +3898,27 @@ impl Gpu {
         self.presents += 1;
         self.pipe_wait_left = PIPELINE_WAIT;
         PRESENTS.store(self.presents, Ordering::Relaxed);
-        self.log_fps();
-
         self.frame_slot_done[self.ubo_slot] = self.last_submit.clone();
         self.ubo_slot = (self.ubo_slot + 1) % FRAME_SLOTS;
         self.ubo_chunk = 0;
         self.ubo_off = 0;
-        if let Some(idx) = self.frame_slot_done[self.ubo_slot].take() {
-            let _ = self.device.poll(PollType::Wait { submission_index: Some(idx), timeout: None });
-        }
+        // Check completion before the next GPU write/submit, allowing CPU
+        // command decoding and packing to overlap the previous GPU work.
         self.process_maps(false);
         if crate::memory_budget::take_reclaim_request() { self.reclaim_cold_uniform_chunk(); }
+        self.timing.record(Timing::CommandWall, command_started.elapsed());
+        self.timing.finish_frame(Instant::now());
+        self.log_fps();
     }
 
     // A pressure request retires at most one long-unused trailing chunk.
     // Drop handles rather than destroy resources: recorded/in-flight wgpu work
     // retains ownership. No global completion wait or hot pipeline eviction.
     fn reclaim_cold_uniform_chunk(&mut self) {
-        let Some(index) = self.ubo_shared.len().checked_sub(1) else { return };
-        if index == 0 || !self.ubo_staging[index].cold(self.presents) { return; }
+        let Some(index) = self.ubo_shared.len().checked_sub(1).filter(|&index| index > 0 && self.ubo_staging[index].cold(self.presents)) else {
+            log("memory reclaim checked: no eligible cold uniform tail; 0 bytes retired by this request, active resources retained");
+            return;
+        };
         let uid = self.ubo_shared[index].1;
         let bytes = self.ubo_staging[index].retained_bytes() as u64;
         self.bind_groups.retain(|_, entry| entry.uniform != Some(uid));
@@ -3810,11 +3934,13 @@ impl Gpu {
         let dt = now.duration_since(self.fps_t0).as_secs_f64();
         if dt >= 10.0 {
             self.publish_memory_census();
+            log(&self.timing.report());
+            log(&format!("frame queue: {} slots (unchanged), {} deferred slot waits; ring high-water {} of {} bytes; pending readbacks/queries {} buffers {} bytes. Ring occupancy is not producer stall time; pending fences/maps are not GPU execution duration.", FRAME_SLOTS, self.slot_waits, self.ring_peak_bytes, self.ring_size.saturating_sub(RING_DATA), self.pending_maps.len(), self.pending_maps.iter().map(|p| p.buf.size()).sum::<u64>()));
             let frames = self.presents - self.fps_n0;
             let resident = if *MEM_STATS { format!(" ({} MB resident)", crate::heap_resident_mb()) } else { String::new() };
             let malloc = if *MEM_STATS { format!(", malloc {} MB", crate::malloc_mb()) } else { String::new() };
             log(&format!(
-                "fps: {:.1} ({} MB memory, game heap {} MB{resident}, gpu {} MB, compressed {} MB{malloc}, {} frames, {} clears folded, {} draws/frame, {} draws waiting for a compiling pipeline, {:.1} submits/frame, {:.1} passes/frame, {} skipped total, pipelines {}, bind groups cached {}, validation errors {})",
+                "PRESENT requests/s: {:.1} (not displayed FPS; {} MB footprint, game accessible heap {} MB{resident}, Metal allocations {} MB, compressed {} MB{malloc}, {} PRESENTs, {} clears folded, {} draws/PRESENT, {} draws waiting for a compiling pipeline, {:.1} submits/PRESENT, {:.1} passes/PRESENT, {} skipped total, pipelines {}, bind groups cached {}, validation errors {})",
                 frames as f64 / dt, crate::footprint_mb(), crate::RT.get().map(|r| r.mem.data_size() >> 20).unwrap_or(0), crate::gpu_allocated_mb(), crate::compressed_mb(), frames, self.clears_folded, (self.draws - self.fps_d0) / frames.max(1), self.pending_skips - self.pending_skips0, (self.submits - self.submits0) as f64 / frames.max(1) as f64,
                 (self.passes - self.passes0) as f64 / frames.max(1) as f64, self.skipped, self.pipe_creates, self.bind_groups.len(), self.errors.load(Ordering::Relaxed)
             ));
@@ -3884,6 +4010,8 @@ impl Gpu {
             self.pipelines.len(), self.pipe_pending.len(), self.compute.len(), self.bind_groups.len(), self.bgl_cache.len()));
         log(&format!("UAV direct staging: {} nonzero buffer clears, {} cumulative host snapshot bytes avoided, {} max single snapshot bytes avoided; still performs the required GPU upload; not retained RAM",
             self.uav_staged_clears, self.uav_snapshot_bytes_avoided, self.uav_snapshot_peak_avoided));
+        log(&format!("GPU lifetime retirement: {} cached groups removed for destroyed/replaced objects; {} cumulative logical proxy/counter bytes retired (not measured physical freed); cache owners {}, dependency edges {}, descriptor owners {}",
+            self.retired_binding_groups, self.retired_derived_payload, self.bind_groups.owner_count(), self.bind_groups.dependency_count(), self.view_owners.len()));
         log(&format!("GPU ownership census: host uniform staging {staging}, constant mirrors {mirrors}, ASTC input capacity {}; GPU logical uniform {uniforms}, engine buffers/counters {buffers}, texture texels {textures}, proxy texels {proxies} bytes; cold uniform retired {} bytes. Texture figures exclude driver padding/residency; do not add to Metal/process footprint. Removed upload snapshot copies: {} cumulative bytes, {} max single payload bytes (not retained RAM).",
             self.astc_src.capacity(), self.uniform_reclaimed_bytes, self.upload_snapshot_bytes_avoided, self.upload_snapshot_peak_avoided));
     }
@@ -3944,3 +4072,7 @@ fn radar_compat(source: &str) -> Option<String> {
 #[cfg(test)]
 #[path = "gpu_memory_integration_tests.rs"]
 mod memory_integration_tests;
+
+#[cfg(test)]
+#[path = "gpu_lifetime_integration_tests.rs"]
+mod lifetime_integration_tests;

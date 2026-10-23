@@ -103,7 +103,9 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => {
                 crate::mp::shutdown();
                 if crate::host::stop_reason().is_some() { return; }
-                crate::rebirth::logs::checkpoint("engine main returned; orderly process exit requested (not proof of gameplay)", true);
+                crate::rebirth::repeated_warning::flush();
+                crate::rebirth::session::user_stop("window close requested");
+                crate::rebirth::logs::checkpoint("user requested window close; process exit requested (not proof of completed engine shutdown)", true);
                 std::process::exit(0);
             }
             WindowEvent::Resized(_) => {
@@ -127,6 +129,8 @@ impl ApplicationHandler for App {
                 if self.mods.super_key() {
                     if let PhysicalKey::Code(winit::keyboard::KeyCode::KeyQ) = event.physical_key {
                         crate::mp::shutdown();
+                        crate::rebirth::repeated_warning::flush();
+                        crate::rebirth::session::user_stop("keyboard quit requested");
                         std::process::exit(0);
                     }
 
@@ -197,6 +201,9 @@ impl App {
         let Some(window) = self.window.clone() else { return };
         if self.started { return; }
         self.started = true;
+        // The guest input block is published later; use the frozen requested
+        // selection here, not a zero from an as-yet-unavailable guest word.
+        crate::rebirth::session::running(crate::rebirth::current().map_or(0, |l| l.settings.mode));
         let (w, h) = backbuffer_size(&window);
         input::set_size(w, h);
         let (rt, startup) = (self.rt.clone(), self.startup.clone());
@@ -217,6 +224,9 @@ impl App {
                     crate::host::report_fatal(format!("engine failed: {e:?}"));
                     return;
                 }
+                crate::rebirth::repeated_warning::flush();
+                crate::rebirth::session::engine_exit(0);
+                crate::rebirth::logs::checkpoint("engine main returned; process exit requested (not proof of gameplay)", true);
                 std::process::exit(0);
             })
             .expect("spawn engine thread");

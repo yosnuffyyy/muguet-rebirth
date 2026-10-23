@@ -86,9 +86,13 @@ fn metal_shared_uniform_slots_retirement_and_borrowed_uploads() {
     // Two chunks, three GPU regions each, two rounds of real PRESENT submission
     // and production completion fences. One staging mirror is shared by all slots.
     for frame in 0..6 {
+        let waits = g.slot_waits;
         draw(&mut g, frame * 2, false);
         draw(&mut g, frame * 2 + 1, true);
+        assert_eq!(g.slot_waits, waits, "CPU preparation must not wait on the old slot");
         g.present(0);
+        assert_eq!(g.slot_waits, waits + u64::from(frame >= 3), "first submission must fence reused slots");
+        if frame >= 2 { assert!(g.frame_slot_done[g.ubo_slot].is_some(), "next slot fence remains pending until next submission"); }
     }
     assert_eq!(g.ubo_shared.len(), 2);
     assert_eq!(g.ubo_staging.len(), 2);

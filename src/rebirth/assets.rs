@@ -93,6 +93,15 @@ impl Index {
         }
         bail!("asset not present in original manifest")
     }
+    /// The worker receives numeric manifest IDs. Keep those entries in original
+    /// order, releasing the two validation/path-lookup maps after parsing.
+    fn into_worker_entries(self) -> Vec<Entry> {
+        let retained: usize = self.entries.iter().map(|e| e.path.capacity()).sum();
+        let released: usize = self.exact.keys().map(String::capacity).sum::<usize>()
+            + self.folded.keys().map(String::capacity).sum::<usize>();
+        eprintln!("[io] manifest index: {} original IDs, retained path capacity {retained} bytes; released validation lookup path capacity {released} bytes plus {} map entries; ownership bytes, not process-footprint savings", self.entries.len(), self.exact.len() + self.folded.len());
+        self.entries
+    }
 }
 pub fn save_namespace(mode: u32) -> Result<&'static str> {
     match mode {
@@ -116,7 +125,7 @@ mod unix {
     };
     pub struct Reader {
         root: File,
-        pub index: Index,
+        entries: Vec<Entry>,
         manifest: std::sync::Arc<[u8]>,
         cache: Vec<(usize, File, u64)>,
         scratch: Box<[u8; SCRATCH_BYTES]>,
@@ -246,10 +255,10 @@ mod unix {
                     .read_to_end(&mut bytes)?;
                 std::sync::Arc::from(bytes)
             };
-            let index = Index::parse(&bytes)?;
+            let entries = Index::parse(&bytes)?.into_worker_entries();
             Ok(Self {
                 root: data,
-                index,
+                entries,
                 manifest: bytes,
                 cache: Vec::with_capacity(OPEN_FILES),
                 scratch: Box::new([0; SCRATCH_BYTES]),
@@ -283,7 +292,7 @@ mod unix {
                 "request outside protocol limits"
             );
             ensure!(!stop.load(Ordering::Acquire), "asset read cancelled");
-            let entry = self.index.entries.get(id).context("unknown asset ID")?;
+            let entry = self.entries.get(id).context("unknown asset ID")?;
             if self.stamp == u64::MAX {
                 self.cache.clear();
                 self.stamp = 0;
@@ -389,5 +398,26 @@ mod tests {
             index(serde_json::json!([["a", 3.0, 0.0]])).unwrap().entries[0].bytes,
             3
         );
+    }
+    #[test]
+    fn worker_keeps_original_entries_without_path_lookup_copies() {
+        let rows: Vec<_> = (0..20_000).map(|i| {
+            serde_json::json!([format!("x64/levels/gta5/cityw/archive-{i:05}.rpf"), i, 0])
+        }).collect();
+        let parsed = index(serde_json::json!(rows)).unwrap();
+        let entry_bytes: usize = parsed.entries.iter().map(|e| e.path.capacity()).sum();
+        let lookup_bytes: usize = parsed.exact.keys().map(String::capacity).sum::<usize>()
+            + parsed.folded.keys().map(String::capacity).sum::<usize>();
+        assert_eq!(lookup_bytes, 2 * entry_bytes);
+        assert_eq!(parsed.exact.len(), 20_000);
+        assert_eq!(parsed.folded.len(), 20_000);
+        let entries_ptr = parsed.entries.as_ptr();
+        let path_ptr = parsed.entries[123].path.as_ptr();
+        let entries = parsed.into_worker_entries();
+        assert_eq!(entries.as_ptr(), entries_ptr);
+        assert_eq!(entries[123].path.as_ptr(), path_ptr);
+        assert_eq!(entries[123].path, "x64/levels/gta5/cityw/archive-00123.rpf");
+        assert_eq!(entries[123].bytes, 123);
+        eprintln!("worker index fixture: retained path payload {entry_bytes} bytes; released lookup path payload {lookup_bytes} bytes plus 40,000 map entries (allocator/footprint not measured)");
     }
 }

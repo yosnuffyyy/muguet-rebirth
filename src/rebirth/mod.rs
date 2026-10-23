@@ -5,6 +5,8 @@ pub mod input_abi;
 pub mod assets;
 pub mod layout;
 pub mod logs;
+pub mod repeated_warning;
+pub mod session;
 pub mod saves;
 pub mod settings;
 use anyhow::{ensure, Context, Result};

@@ -37,6 +37,8 @@ pub fn engine_stopped() -> bool {
 }
 
 pub fn report_fatal(reason: String) {
+    crate::rebirth::repeated_warning::flush();
+    crate::rebirth::session::fatal(&reason);
     crate::rebirth::logs::checkpoint(&format!("FATAL: {reason}"), true);
     let mut fatal = FATAL.lock().unwrap();
     if fatal.is_none() { *fatal = Some(reason); }
@@ -174,6 +176,9 @@ pub fn call(mut caller: Caller<'_, HostState>, idx: usize, params: &[Val], resul
         "emscripten_exit_with_live_runtime" => { PENDING_UNWIND.with(|c| c.set(true)); return Err(Unwind.into()); }
         "_emscripten_throw_longjmp" => { PENDING_LONGJMP.with(|c| c.set(true)); return Err(LongJmp.into()); }
         "exit" | "proc_exit" => {
+            crate::rebirth::repeated_warning::flush();
+            crate::rebirth::session::engine_exit(int(params, 0) as i32);
+            crate::rebirth::logs::checkpoint(&format!("engine exit({}) requested", int(params, 0)), true);
             eprintln!("[host] engine exit({})", int(params, 0));
             std::process::exit(int(params, 0) as i32);
         }
@@ -215,10 +220,12 @@ pub fn call(mut caller: Caller<'_, HostState>, idx: usize, params: &[Val], resul
         "wasm_print_line_js" | "wasm_hang_line_js" => {
             let line = read_cstr(mem, int(params, 0) as u64);
             if let Some(at) = line.find("Fatal Error: ") {
+                crate::rebirth::repeated_warning::flush();
+                crate::rebirth::session::fatal(&line[at + 13..]);
                 crate::rebirth::logs::checkpoint(&format!("ENGINE FATAL: {}", &line[at + 13..]), true);
                 FATAL.lock().unwrap().get_or_insert_with(|| line[at + 13..].to_string());
             }
-            eprintln!("[eng] {line}");
+            crate::rebirth::repeated_warning::print_engine_line(&line);
         }
         "wasm_module_int_js" => set_int(results, int(params, 1)),
         "wasm_has_page_js" => set_int(results, 1),

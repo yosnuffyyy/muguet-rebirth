@@ -154,6 +154,7 @@ pub fn identify(message: &str) {
     let message: String = message.chars().take(1024)
         .map(|c| if c.is_control() { ' ' } else { c }).collect();
     if IDENTITY.set(message).is_ok() {
+        super::session::identify(IDENTITY.get().unwrap());
         checkpoint(IDENTITY.get().unwrap(), true);
     }
 }
@@ -212,8 +213,15 @@ pub fn start(root: &Path) -> Result<()> {
     WRITER
         .set(writer)
         .map_err(|_| anyhow::anyhow!("log capture already active"))?;
+    let session = WRITER.get().unwrap().lock().unwrap().session;
+    match super::session::start(root, session) {
+        Ok(Some(previous)) => checkpoint(&previous, true),
+        Ok(None) => (),
+        Err(e) => checkpoint(&format!("session outcome journal unavailable: {e}; no termination classification available"), true),
+    }
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        super::session::panic(&format!("{info}"));
         // Never recursively wait on the writer if it is the panicking thread.
         if let Some(writer) = WRITER.get() {
             if let Ok(mut writer) = writer.try_lock() {
@@ -226,6 +234,9 @@ pub fn start(root: &Path) -> Result<()> {
     Ok(())
 }
 pub fn export(root: &Path) -> Result<PathBuf> {
+    // Include pending exact-warning totals even if no later repeat arrived to
+    // trigger their periodic summary. This happens only on explicit export.
+    super::repeated_warning::flush();
     let files = WRITER
         .get()
         .ok_or_else(|| anyhow::anyhow!("session capture is not active"))?

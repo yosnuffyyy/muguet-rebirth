@@ -4,3 +4,5 @@ pub mod rebirth;
 pub mod memory_budget;
 #[path="../src/pipeline_recipes.rs"]
 pub mod pipeline_recipes;
+#[path="../src/gpu_timing.rs"]
+pub mod gpu_timing;

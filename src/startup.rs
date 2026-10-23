@@ -1,5 +1,9 @@
 //! Startup evidence only: counters never drive engine or rendering behavior.
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+/// 0 producer idle, 1 encoding, 2 slot fence, 3 submit, 4 drawable acquire,
+/// 5 present, 6 readback, 7 pipeline, 8 poll, 9 suspended.
+/// A sampled phase is not a cause of failure.
+pub static GPU_PHASE: AtomicU32 = AtomicU32::new(0);
 pub static SCRIPT_TICKS: AtomicU64 = AtomicU64::new(0);
 pub static WORKERS_STARTED: AtomicU64 = AtomicU64::new(0);
 pub static WORKERS_READY: AtomicU64 = AtomicU64::new(0);
@@ -47,6 +51,7 @@ pub fn monitor() {
                     "latest renderer ownership counters (independently sampled; PRESENT marker {}): live_objects={} engine_buffer_capacity_bytes={} texture_payload_estimate_bytes={} uniform_gpu_capacity_bytes={} uniform_cpu_stage_capacity_bytes={}; MAX=not sampled; estimates exclude driver padding/metadata and are not additive with footprint/Metal totals",
                     budget::GPU_CENSUS_PRESENT.load(Ordering::Relaxed), budget::GPU_OBJECTS.load(Ordering::Relaxed), budget::GPU_BUFFER_BYTES.load(Ordering::Relaxed),
                     budget::GPU_TEXTURE_ESTIMATE_BYTES.load(Ordering::Relaxed), budget::GPU_UNIFORM_BYTES.load(Ordering::Relaxed), budget::GPU_STAGING_BYTES.load(Ordering::Relaxed)), false);
+                crate::rebirth::logs::checkpoint(&format!("GPU phase={} (0 producer idle, 1 service/encode, 2 slot fence, 3 submit, 4 acquire, 5 present, 6 readback, 7 pipeline, 8 poll, 9 suspended); phase is not termination cause", GPU_PHASE.load(Ordering::Relaxed)), true);
             }
             // Advisory background sampling only. Never waits for GPU completion,
             // walks all guest pages or assumes an entitlement's memory grant.
