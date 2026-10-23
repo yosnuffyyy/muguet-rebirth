@@ -3232,7 +3232,7 @@ impl Gpu {
                 let size = std::num::NonZeroU64::new(bytes).expect("UAV buffer has zero native size");
                 let mut staging = self.queue.write_buffer_with(&g, 0, size)
                     .unwrap_or_else(|| panic!("UAV clear staging failed: view {id}, buffer {res}, bytes {bytes}"));
-                crate::gpu_memory::fill_uav_words(&mut staging, values);
+                crate::gpu_memory::fill_uav_words(staging.slice(..), values);
                 drop(staging);
                 self.uav_staged_clears += 1;
                 self.uav_snapshot_bytes_avoided = self.uav_snapshot_bytes_avoided.saturating_add(bytes);

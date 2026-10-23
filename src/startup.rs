@@ -39,7 +39,7 @@ pub fn monitor() {
                 let guest = crate::RT.get().map(|rt| rt.mem.data_size());
                 crate::rebirth::logs::checkpoint(&format!(
                     "heartbeat elapsed={elapsed}s available_bytes={available} footprint_bytes={footprint} resident_bytes={resident} compressed_bytes={compressed} metal_allocated_bytes={metal} peak_sampled_footprint={} thermal={thermal} os_pressure={pressure} pressure_events={} reclaim_requests={} (MAX=unknown; counters overlap, do not sum) guest_accessible_bytes={guest:?} workers_started/ready={}/{} commands={} present_requests={} surface_present_calls={} script_ticks={} suspended={} audio_callbacks/nonzero_output_samples={}/{}; guest resident/GPU residency/display completion/player spawn UNKNOWN",
-                    policy.peak_footprint, budget::PRESSURE_EVENTS.load(Ordering::Relaxed), budget::RECLAIM_REQUESTS.load(Ordering::Relaxed),
+                    policy.peak_footprint.unwrap_or(u64::MAX), budget::PRESSURE_EVENTS.load(Ordering::Relaxed), budget::RECLAIM_REQUESTS.load(Ordering::Relaxed),
                     WORKERS_STARTED.load(Ordering::Relaxed), WORKERS_READY.load(Ordering::Relaxed),
                     GPU_COMMANDS.load(Ordering::Relaxed), PRESENT_REQUESTS.load(Ordering::Relaxed), SURFACE_PRESENTS.load(Ordering::Relaxed), SCRIPT_TICKS.load(Ordering::Relaxed),
                     crate::gpu::SUSPENDED.load(Ordering::Relaxed), crate::audio::CALLBACKS.load(Ordering::Relaxed), crate::audio::NONZERO_SAMPLES.load(Ordering::Relaxed)), true);

@@ -37,10 +37,10 @@ fn staging_range_cannot_overwrite_adjacent_gpu_slot() {
 #[test]
 fn direct_uav_staging_preserves_pattern_and_write_boundaries() {
     for words in [0, 1, 2, 3, 4, 5, 7, 16, 255, 256, 257] {
-        let values = [0x01020304, 0xffffffff, 0x3f800000, 0x80000000];
+        let values: [u32; 4] = [0x01020304, 0xffffffff, 0x3f800000, 0x80000000];
         let expected: Vec<u8> = (0..words).flat_map(|i| values[i & 3].to_le_bytes()).collect();
         let mut destination = vec![0xaa; words * 4 + 16];
-        fill_uav_words(&mut destination[8..8 + words * 4], values);
+        fill_uav_words(wgpu::WriteOnly::from_mut(&mut destination[8..8 + words * 4]), values);
         assert_eq!(&destination[..8], &[0xaa; 8]);
         assert_eq!(&destination[8 + words * 4..], &[0xaa; 8]);
         assert_eq!(&destination[8..8 + words * 4], expected.as_slice());
@@ -65,7 +65,7 @@ fn synthetic_uav_clear_allocation_and_copy_comparison() {
     let checksum = driver_staging.iter().fold(0u64, |sum, b| sum.wrapping_add(*b as u64));
     driver_staging.fill(0);
     let new_start = std::time::Instant::now();
-    fill_uav_words(&mut driver_staging, values);
+    fill_uav_words(wgpu::WriteOnly::from_mut(driver_staging.as_mut_slice()), values);
     let new_time = new_start.elapsed();
     assert_eq!(checksum, driver_staging.iter().fold(0u64, |sum, b| sum.wrapping_add(*b as u64)));
     for (i, word) in driver_staging.chunks_exact(4).enumerate() { assert_eq!(word, values[i & 3].to_le_bytes()); }

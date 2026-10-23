@@ -30,7 +30,7 @@ pub fn request_reclaim() {
 const MIB: u64 = 1 << 20;
 #[derive(Default)]
 pub struct Policy {
-    pub peak_footprint: u64,
+    pub peak_footprint: Option<u64>,
     low_samples: u8,
     last_request: Option<u64>,
     last_severity: u32,
@@ -41,7 +41,7 @@ impl Policy {
     /// MAX denotes unknown. Thresholds only request reclamation of *unused*
     /// caches, never reject allocations or assume an entitlement's RAM grant.
     pub fn sample(&mut self, now: u64, available: u64, footprint: u64, os: u32) -> Option<&'static str> {
-        if footprint != u64::MAX { self.peak_footprint = self.peak_footprint.max(footprint); }
+        if footprint != u64::MAX { self.peak_footprint = Some(self.peak_footprint.unwrap_or(0).max(footprint)); }
         self.low_samples = if available < 256 * MIB { self.low_samples.saturating_add(1) } else { 0 };
         let mut growth = false;
         if footprint != u64::MAX {
@@ -79,7 +79,10 @@ mod tests {
         let mut p = Policy::default();
         for t in 0..100 { assert!(p.sample(t, 1024*MIB, 2000*MIB, 0).is_none()); }
         assert!(p.sample(100, u64::MAX, u64::MAX, 0).is_none());
-        assert_eq!(p.peak_footprint, 2000*MIB);
+        assert_eq!(p.peak_footprint, Some(2000*MIB));
+        let mut unknown = Policy::default();
+        assert!(unknown.sample(0, u64::MAX, u64::MAX, 0).is_none());
+        assert_eq!(unknown.peak_footprint, None);
     }
     #[test]
     fn transient_low_headroom_is_ignored_and_sustained_pressure_is_bounded() {
