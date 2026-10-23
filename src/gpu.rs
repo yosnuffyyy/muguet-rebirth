@@ -869,6 +869,9 @@ pub struct Gpu {
     upload_snapshot_bytes_avoided: u64,
     upload_snapshot_peak_avoided: u64,
     uniform_reclaimed_bytes: u64,
+    uav_staged_clears: u64,
+    uav_snapshot_bytes_avoided: u64,
+    uav_snapshot_peak_avoided: u64,
     ubo_slot: usize,
     ubo_chunk: usize,
     ubo_off: u64,
@@ -1039,7 +1042,7 @@ impl Gpu {
             objs: Vec::new(), enc: None, enc_epoch: 1, pass: None, pass_key: None, pass_info: None, pass_st: PassSt::default(),
             map_programs: HashMap::new(), warm: Default::default(), warm_programs: HashMap::new(), warmed: 0, warm_t0: None, recipe_bytes: 0, s: State::new(), pdirty: true, last_pl: None, shader_index, shader_dir, next_uid: 1,
             bgl_cache: FxHashMap::default(), empty_bgl: None, pipelines: FxHashMap::default(), compute: HashMap::new(), bind_groups: FxHashMap::default(),
-            ubo_slots: (0..FRAME_SLOTS).map(|_| Vec::new()).collect(), ubo_shared: Vec::new(), ubo_staging: Vec::new(), upload_snapshot_bytes_avoided: 0, upload_snapshot_peak_avoided: 0, uniform_reclaimed_bytes: 0, ubo_slot: 0, ubo_chunk: 0, ubo_off: 0,
+            ubo_slots: (0..FRAME_SLOTS).map(|_| Vec::new()).collect(), ubo_shared: Vec::new(), ubo_staging: Vec::new(), upload_snapshot_bytes_avoided: 0, upload_snapshot_peak_avoided: 0, uniform_reclaimed_bytes: 0, uav_staged_clears: 0, uav_snapshot_bytes_avoided: 0, uav_snapshot_peak_avoided: 0, ubo_slot: 0, ubo_chunk: 0, ubo_off: 0,
             dummy_tex: HashMap::new(), dummy_smp: None, dummy_cmp: None, dummy_bufs: HashMap::new(), zero_vb: None, zero_src: None, scratch: None,
             proxy_pipelines: HashMap::new(), unfilt: HashMap::new(), nearest: HashMap::new(), ramp_tex: 0, ramp_view: None, white_view: None, f2d_pipeline: None, bc1_astc: None, astc_jobs: Vec::new(), astc_src: Vec::new(), astc_dst_bytes: 0, astc_blocks: 0, astc_pending: Default::default(), astc_in_encoder: 0, blit: None, mip_pipelines: HashMap::new(), mip_sampler: None,
             occlusion_set: None, occlusion_next: 0, occlusion_active: None, occlusion_pass_slot: None,
@@ -3223,8 +3226,17 @@ impl Gpu {
                 self.encoder().clear_buffer(&g, 0, None);
             } else {
                 self.flush();
-                let data: Vec<u8> = (0..bytes / 4).flat_map(|i| values[(i & 3) as usize].to_le_bytes()).collect();
-                self.queue.write_buffer(&g, 0, &data);
+                // Fill wgpu-owned staging directly. Dropping the view schedules
+                // the same copy before the next submission as write_buffer did.
+                // A failed staging request remains fatal, never a skipped clear.
+                let size = std::num::NonZeroU64::new(bytes).expect("UAV buffer has zero native size");
+                let mut staging = self.queue.write_buffer_with(&g, 0, size)
+                    .unwrap_or_else(|| panic!("UAV clear staging failed: view {id}, buffer {res}, bytes {bytes}"));
+                crate::gpu_memory::fill_uav_words(&mut staging, values);
+                drop(staging);
+                self.uav_staged_clears += 1;
+                self.uav_snapshot_bytes_avoided = self.uav_snapshot_bytes_avoided.saturating_add(bytes);
+                self.uav_snapshot_peak_avoided = self.uav_snapshot_peak_avoided.max(bytes);
             }
             self.use_buf(res);
             return;
@@ -3835,6 +3847,7 @@ impl Gpu {
     // These logical/capacity scopes overlap Metal/process counters and must not
     // be added to them. Native driver padding and queued-retirement are unknown.
     fn publish_memory_census(&self) {
+        let census_start = Instant::now();
         let staging = self.ubo_staging.iter().map(|s| s.retained_bytes() as u64).sum::<u64>();
         let uniforms = self.ubo_shared.len() as u64 * RING_CHUNK * FRAME_SLOTS as u64;
         let (mut objects, mut buffers, mut textures, mut mirrors, mut proxies) = (0u64, 0u64, 0u64, 0u64, 0u64);
@@ -3860,6 +3873,17 @@ impl Gpu {
         crate::memory_budget::GPU_TEXTURE_ESTIMATE_BYTES.store(textures + proxies, Ordering::Relaxed);
         crate::memory_budget::GPU_OBJECTS.store(objects, Ordering::Relaxed);
         crate::memory_budget::GPU_CENSUS_PRESENT.store(self.presents, Ordering::Relaxed);
+        let warm_programs = self.warm_programs.len();
+        let map_programs = self.map_programs.len();
+        let shader_variants = self.warm_programs.values().flatten().chain(self.map_programs.values())
+            .map(|p| p.variants.borrow().len()).sum::<usize>();
+        let zero_src = self.zero_src.as_ref().map(Buffer::size).unwrap_or(0);
+        let scratch = self.scratch.as_ref().map(Buffer::size).unwrap_or(0);
+        let census_us = census_start.elapsed().as_micros();
+        log(&format!("GPU cache ownership: render pipeline entries {}, pending {}, compute entries {}, bind groups {}, layouts {}, warm programs {warm_programs}, map programs {map_programs}, shader variant entries {shader_variants}; zero-fill source {zero_src}, bit-copy scratch {scratch} logical bytes; census wall {census_us} us (excludes formatting/log I/O, no GPU wait)",
+            self.pipelines.len(), self.pipe_pending.len(), self.compute.len(), self.bind_groups.len(), self.bgl_cache.len()));
+        log(&format!("UAV direct staging: {} nonzero buffer clears, {} cumulative host snapshot bytes avoided, {} max single snapshot bytes avoided; still performs the required GPU upload; not retained RAM",
+            self.uav_staged_clears, self.uav_snapshot_bytes_avoided, self.uav_snapshot_peak_avoided));
         log(&format!("GPU ownership census: host uniform staging {staging}, constant mirrors {mirrors}, ASTC input capacity {}; GPU logical uniform {uniforms}, engine buffers/counters {buffers}, texture texels {textures}, proxy texels {proxies} bytes; cold uniform retired {} bytes. Texture figures exclude driver padding/residency; do not add to Metal/process footprint. Removed upload snapshot copies: {} cumulative bytes, {} max single payload bytes (not retained RAM).",
             self.astc_src.capacity(), self.uniform_reclaimed_bytes, self.upload_snapshot_bytes_avoided, self.upload_snapshot_peak_avoided));
     }

@@ -11,6 +11,7 @@ const CHUNK: u64 = 32 * 1024 * 1024;
 const KEEP: usize = 8;
 static CAPTURE_ERROR: Mutex<Option<String>> = Mutex::new(None);
 static WRITER: OnceLock<Arc<Mutex<Writer>>> = OnceLock::new();
+static IDENTITY: OnceLock<String> = OnceLock::new();
 fn stamp() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -117,12 +118,15 @@ impl Writer {
             .collect()
     }
 }
-fn export_snapshot(files: Vec<(File, u64)>, destination: &Path) -> Result<()> {
+fn export_snapshot(files: Vec<(File, u64)>, destination: &Path, identity: Option<&str>) -> Result<()> {
     let mut output = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(destination)?;
     writeln!(output,"Project Rebirth — Muguet session log. Retention: latest 8 × 32 MiB across launches; older text may be rotated. Export is a snapshot, not proof of rendering or audio output.\n")?;
+    if let Some(identity) = identity {
+        writeln!(output, "Export metadata — {identity}\nThis identifies the exporting app only. Retained sessions may come from older builds; use each session's installed-app record.\n")?;
+    }
     let mut buffer = [0u8; 32768];
     for (mut input, mut left) in files {
         while left > 0 {
@@ -143,6 +147,15 @@ pub fn checkpoint(message: &str, durable: bool) {
             if let Ok(mut error) = CAPTURE_ERROR.lock() { *error = Some(e.to_string()); }
         }
     } else { eprintln!("[checkpoint] {message}"); }
+}
+
+/// One durable bundle-identity record per process, supplied after capture starts.
+pub fn identify(message: &str) {
+    let message: String = message.chars().take(1024)
+        .map(|c| if c.is_control() { ' ' } else { c }).collect();
+    if IDENTITY.set(message).is_ok() {
+        checkpoint(IDENTITY.get().unwrap(), true);
+    }
 }
 
 #[cfg(target_os = "ios")]
@@ -221,7 +234,7 @@ pub fn export(root: &Path) -> Result<PathBuf> {
         .snapshot()?;
     fs::create_dir_all(root)?;
     let destination = root.join(format!("rebirth-{}-0.txt", stamp()));
-    export_snapshot(files, &destination)?;
+    export_snapshot(files, &destination, IDENTITY.get().map(String::as_str))?;
     if let Some(error) = CAPTURE_ERROR.lock().unwrap().as_ref() {
         writeln!(
             OpenOptions::new().append(true).open(&destination)?,
@@ -275,7 +288,7 @@ mod tests {
         let out = root.join("export.txt");
         // Further appends cannot extend a snapshot's captured current-file size.
         w.append(b"later").unwrap();
-        export_snapshot(snapshot, &out).unwrap();
+        export_snapshot(snapshot, &out, None).unwrap();
         let b = fs::read(&out).unwrap();
         assert!(b.ends_with(&data[64..]));
         assert!(!b.ends_with(b"later"));
@@ -285,6 +298,23 @@ mod tests {
         assert!(root.join("unrelated.txt").is_file());
         assert!(w.paths.len() <= 3);
         drop(w);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn exported_identity_does_not_relabel_retained_sessions() {
+        let root = std::env::temp_dir().join(format!("rebirth-identity-{}", stamp()));
+        fs::create_dir_all(&root).unwrap();
+        let old = root.join("old.txt");
+        let previous = b"=== previous session ===\ninstalled app: old build\n";
+        fs::write(&old, previous).unwrap();
+        let out = root.join("export.txt");
+        let identity = "installed app: Rebirth version=0.46.5 build=51 source=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bundle=io.test.rebirth";
+        export_snapshot(vec![(File::open(&old).unwrap(), previous.len() as u64)], &out, Some(identity)).unwrap();
+        let text = fs::read_to_string(&out).unwrap();
+        assert!(text.contains(identity));
+        assert!(text.contains("exporting app only"));
+        assert!(text.contains("Retained sessions may come from older builds"));
+        assert!(text.as_bytes().ends_with(previous));
         fs::remove_dir_all(root).unwrap();
     }
 }

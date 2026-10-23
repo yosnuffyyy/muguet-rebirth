@@ -3,6 +3,16 @@ import Foundation
     static func main() throws {
         var checks=0
         func check(_ condition:Bool) {precondition(condition);checks+=1}
+        let revision=String(repeating:"a",count:40)
+        let installed=RebirthBuildIdentity(info:["CFBundleShortVersionString":"0.46.5","CFBundleVersion":"51","RebirthSourceRevision":revision,"CFBundleIdentifier":"io.test.rebirth"])
+        check(installed.summary=="Rebirth 0.46.5 · Build 51")
+        check(installed.source==revision && installed.diagnostic.contains("version=0.46.5 build=51"))
+        check(installed.diagnostic.contains("source=\(revision) bundle=io.test.rebirth"))
+        let absent=RebirthBuildIdentity(info:[:])
+        check(absent.summary=="Rebirth Unknown · Build Unknown" && absent.source=="Unknown")
+        let invalid=RebirthBuildIdentity(info:["CFBundleShortVersionString":"$(VERSION)","CFBundleVersion":51,"RebirthSourceRevision":"not-a-commit","CFBundleIdentifier":"bad\nentry"])
+        check(invalid.version=="Unknown" && invalid.build=="Unknown" && invalid.source=="Unknown" && invalid.bundle=="Unknown")
+        check(RebirthBuildIdentity(info:["CFBundleVersion":" 52 "]).build=="52")
         var s=RebirthSettings()
         for (scale,resolution) in [(50,"320 × 180"),(70,"448 × 252"),(100,"640 × 360")] {
             s.scale=scale;try s.validate();check(s.resolution==resolution)

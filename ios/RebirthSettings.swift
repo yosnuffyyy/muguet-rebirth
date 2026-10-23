@@ -2,6 +2,27 @@
 import Foundation
 import CoreFoundation
 
+// Installed identity comes from the signed bundle, never a hardcoded UI label.
+struct RebirthBuildIdentity {
+    let version: String, build: String, source: String, bundle: String
+    init(info: [String: Any]) {
+        func value(_ key: String) -> String {
+            guard let raw = info[key] as? String else { return "Unknown" }
+            let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty, text.utf8.count <= 128, !text.contains("$("),
+                  !text.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else { return "Unknown" }
+            return text
+        }
+        version = value("CFBundleShortVersionString")
+        build = value("CFBundleVersion")
+        let revision = value("RebirthSourceRevision").lowercased()
+        source = revision.count == 40 && revision.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) } ? revision : "Unknown"
+        bundle = value("CFBundleIdentifier")
+    }
+    var summary: String { "Rebirth \(version) · Build \(build)" }
+    var diagnostic: String { "installed app: Rebirth version=\(version) build=\(build) source=\(source) bundle=\(bundle)" }
+}
+
 struct RebirthSettings: Codable, Equatable {
     var schema = 1, mode = 1
     var preset = "Low"

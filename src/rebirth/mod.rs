@@ -121,6 +121,14 @@ mod ffi {
             }
         }
     }
+    #[no_mangle]
+    pub unsafe extern "C" fn rebirth_logs_identify(identity: *const c_char) {
+        if !identity.is_null() {
+            if let Ok(identity) = CStr::from_ptr(identity).to_str() {
+                logs::identify(identity);
+            }
+        }
+    }
     static EXPORTED: Mutex<Option<CString>> = Mutex::new(None);
     #[no_mangle]
     pub unsafe extern "C" fn rebirth_logs_export(root: *const c_char) -> *const c_char {

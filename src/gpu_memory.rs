@@ -50,6 +50,20 @@ pub fn upload_range(memory_len: usize, address: u64, size: u64) -> Option<Range<
     (end <= memory_len).then_some(start..end)
 }
 
+/// Exact existing buffer-UAV clear pattern, assembled in write-only staging.
+/// No allocation and no reads from the potentially write-combined destination.
+pub fn fill_uav_words(destination: &mut [u8], values: [u32; 4]) {
+    assert_eq!(destination.len() % 4, 0, "UAV buffer clear must contain complete words");
+    let mut pattern = [0u8; 16];
+    for (word, value) in pattern.chunks_exact_mut(4).zip(values) {
+        word.copy_from_slice(&value.to_le_bytes());
+    }
+    let mut chunks = destination.chunks_exact_mut(16);
+    for chunk in &mut chunks { chunk.copy_from_slice(&pattern); }
+    let tail = chunks.into_remainder();
+    tail.copy_from_slice(&pattern[..tail.len()]);
+}
+
 /// Logical texel payload only, not Metal heap/residency or process footprint.
 /// Depth24 allocation layout is implementation-defined: count four bytes/texel.
 pub fn texture_bytes(t: &wgpu::Texture) -> u64 {

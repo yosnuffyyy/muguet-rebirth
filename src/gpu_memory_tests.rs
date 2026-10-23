@@ -35,6 +35,45 @@ fn staging_range_cannot_overwrite_adjacent_gpu_slot() {
 }
 
 #[test]
+fn direct_uav_staging_preserves_pattern_and_write_boundaries() {
+    for words in [0, 1, 2, 3, 4, 5, 7, 16, 255, 256, 257] {
+        let values = [0x01020304, 0xffffffff, 0x3f800000, 0x80000000];
+        let expected: Vec<u8> = (0..words).flat_map(|i| values[i & 3].to_le_bytes()).collect();
+        let mut destination = vec![0xaa; words * 4 + 16];
+        fill_uav_words(&mut destination[8..8 + words * 4], values);
+        assert_eq!(&destination[..8], &[0xaa; 8]);
+        assert_eq!(&destination[8 + words * 4..], &[0xaa; 8]);
+        assert_eq!(&destination[8..8 + words * 4], expected.as_slice());
+    }
+}
+
+#[test]
+fn synthetic_uav_clear_allocation_and_copy_comparison() {
+    const SIZE: usize = 64 << 20;
+    let values: [u32; 4] = [0x01234567, 0x89abcdef, 0x3f800000, 0];
+    // Stand in for wgpu's required staging allocation in both paths. Keep the
+    // old snapshot in a nested scope so before/after do not overlap in the test.
+    let mut driver_staging = vec![0u8; SIZE];
+    let old_start = std::time::Instant::now();
+    let old_host_bytes;
+    {
+        let snapshot: Vec<u8> = (0..SIZE / 4).flat_map(|i| values[i & 3].to_le_bytes()).collect();
+        old_host_bytes = snapshot.capacity();
+        driver_staging.copy_from_slice(&snapshot);
+    }
+    let old_time = old_start.elapsed();
+    let checksum = driver_staging.iter().fold(0u64, |sum, b| sum.wrapping_add(*b as u64));
+    driver_staging.fill(0);
+    let new_start = std::time::Instant::now();
+    fill_uav_words(&mut driver_staging, values);
+    let new_time = new_start.elapsed();
+    assert_eq!(checksum, driver_staging.iter().fold(0u64, |sum, b| sum.wrapping_add(*b as u64)));
+    for (i, word) in driver_staging.chunks_exact(4).enumerate() { assert_eq!(word, values[i & 3].to_le_bytes()); }
+    assert!(old_host_bytes >= SIZE);
+    eprintln!("HOST synthetic UAV clear {SIZE} bytes: old extra snapshot capacity {old_host_bytes}, direct extra snapshot 0, required driver staging {SIZE} in both; old fill/copy {old_time:?}, direct fill {new_time:?}; exact words; not iPhone footprint/FPS");
+}
+
+#[test]
 fn synthetic_uniform_staging_allocation_and_cpu_comparison() {
     // Identical writes and queue-copy stand-in. This is a host fixture, not FPS
     // or device footprint: it isolates the former three CPU staging owners.

@@ -44,7 +44,7 @@ pub fn monitor() {
                     GPU_COMMANDS.load(Ordering::Relaxed), PRESENT_REQUESTS.load(Ordering::Relaxed), SURFACE_PRESENTS.load(Ordering::Relaxed), SCRIPT_TICKS.load(Ordering::Relaxed),
                     crate::gpu::SUSPENDED.load(Ordering::Relaxed), crate::audio::CALLBACKS.load(Ordering::Relaxed), crate::audio::NONZERO_SAMPLES.load(Ordering::Relaxed)), true);
                 crate::rebirth::logs::checkpoint(&format!(
-                    "renderer ownership snapshot at PRESENT {}: live_objects={} engine_buffer_capacity_bytes={} texture_payload_estimate_bytes={} uniform_gpu_capacity_bytes={} uniform_cpu_stage_capacity_bytes={}; MAX=not sampled; estimates exclude driver padding/metadata and are not additive with footprint/Metal totals",
+                    "latest renderer ownership counters (independently sampled; PRESENT marker {}): live_objects={} engine_buffer_capacity_bytes={} texture_payload_estimate_bytes={} uniform_gpu_capacity_bytes={} uniform_cpu_stage_capacity_bytes={}; MAX=not sampled; estimates exclude driver padding/metadata and are not additive with footprint/Metal totals",
                     budget::GPU_CENSUS_PRESENT.load(Ordering::Relaxed), budget::GPU_OBJECTS.load(Ordering::Relaxed), budget::GPU_BUFFER_BYTES.load(Ordering::Relaxed),
                     budget::GPU_TEXTURE_ESTIMATE_BYTES.load(Ordering::Relaxed), budget::GPU_UNIFORM_BYTES.load(Ordering::Relaxed), budget::GPU_STAGING_BYTES.load(Ordering::Relaxed)), false);
             }

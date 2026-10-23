@@ -6,6 +6,7 @@ import UIKit
 @_cdecl("rebirth_error") func previewError()->UnsafePointer<CChar>? {nil}
 @_cdecl("muguet_has_game_code") func previewHasCode()->Bool {false}
 @_cdecl("rebirth_logs_start") func previewStartLogs(_ root:UnsafePointer<CChar>)->Bool {true}
+@_cdecl("rebirth_logs_identify") func previewIdentifyLogs(_ identity:UnsafePointer<CChar>) {}
 @_cdecl("rebirth_logs_export") func previewExport(_ root:UnsafePointer<CChar>)->UnsafePointer<CChar>? {nil}
 @main final class PreviewApplication:UIResponder,UIApplicationDelegate {
     var window:UIWindow?

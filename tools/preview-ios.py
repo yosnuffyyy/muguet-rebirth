@@ -7,6 +7,9 @@ sdk=out('xcrun','--sdk','iphonesimulator','--show-sdk-path')
 run('xcrun','swiftc','-parse-as-library','-emit-executable','-O','-target','arm64-apple-ios15.0-simulator','-sdk',sdk,'ios/RebirthSettings.swift','ios/RebirthLauncher.swift','tests/LauncherPreview.swift','-o',str(app/'Preview'))
 bundle='io.github.yosnuffyyy.rebirth.preview'
 plist={'CFBundleIdentifier':bundle,'CFBundleExecutable':'Preview','CFBundleName':'Rebirth UI Preview','CFBundlePackageType':'APPL','CFBundleVersion':'1','CFBundleShortVersionString':'1','MinimumOSVersion':'15.0','UIDeviceFamily':[1],'UILaunchScreen':{},'UISupportedInterfaceOrientations':['UIInterfaceOrientationLandscapeLeft','UIInterfaceOrientationLandscapeRight']}
+production_info=plistlib.loads(pathlib.Path('ios/Info.plist').read_bytes())
+plist.update({key:production_info[key] for key in ['CFBundleVersion','CFBundleShortVersionString']})
+plist['RebirthSourceRevision']=out('git','rev-parse','HEAD')
 (app/'Info.plist').write_bytes(plistlib.dumps(plist))
 runtimes=json.loads(out('xcrun','simctl','list','runtimes','--json'))['runtimes']
 runtime=next(r['identifier'] for r in reversed(runtimes) if r.get('isAvailable') and 'iOS' in r['name'])
@@ -20,7 +23,7 @@ try:
   time.sleep(2)
   run('xcrun','simctl','io',device,'screenshot',f'evidence/local/launcher-{page.lower().replace(" ","-")}.png')
   run('xcrun','simctl','terminate',device,bundle)
- pathlib.Path('evidence/local/ui-preview.json').write_text(json.dumps({'runtime':runtime,'device':device,'gameplay':False,'productionRustLinked':False,'purpose':'actual Swift launcher layout only'},indent=2))
+ pathlib.Path('evidence/local/ui-preview.json').write_text(json.dumps({'runtime':runtime,'device':device,'gameplay':False,'productionRustLinked':False,'version':plist['CFBundleShortVersionString'],'build':plist['CFBundleVersion'],'source':plist['RebirthSourceRevision'],'purpose':'actual Swift launcher layout only'},indent=2))
 finally:
  subprocess.run(['xcrun','simctl','shutdown',device],check=False)
  subprocess.run(['xcrun','simctl','delete',device],check=False)

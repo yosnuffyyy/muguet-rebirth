@@ -123,6 +123,52 @@ fn metal_shared_uniform_slots_retirement_and_borrowed_uploads() {
     let texture = g.tex(2).unwrap().tex.clone();
     assert_eq!(read_layers(&mut g, &texture, 1), vec![[13, 41, 79, 255]]);
     assert_eq!(crate::gpu_memory::texture_bytes(&texture), 4);
+
+    // Production full-buffer UAV clears. Copies before, between and after the
+    // clears prove ordering; nonzero readback offsets preserve guard bytes.
+    // Four/five-word sizes cover non-16-byte tails without changing view semantics.
+    for size in [4u32, 20, 4096] {
+        g.create_buffer(3, size, BIND_UAV, 0, 0);
+        g.set_obj(4, Obj::Uav(ViewObj { res: 3, is_buf: true, fmt: 0, vdim: 1,
+            a: 0, b: size / 4, c: 0, d: 0, views: HashMap::new() }));
+        let source = g.buf(3).unwrap().gpu.as_ref().unwrap().clone();
+        let initial = vec![0x5a; size as usize];
+        g.queue.write_buffer(&source, 0, &initial);
+        let readback = g.device.create_buffer(&BufferDescriptor { label: None, size: size as u64 * 4 + 16,
+            usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ, mapped_at_creation: false });
+        g.queue.write_buffer(&readback, 0, &vec![0xa5; size as usize * 4 + 16]);
+        g.encoder().copy_buffer_to_buffer(&source, 0, &readback, 8, size as u64);
+        let first = [0x01020304, 0x89abcdef, 0x3f800000, 0x80000000];
+        g.clear_uav(4, first);
+        g.encoder().copy_buffer_to_buffer(&source, 0, &readback, 8 + size as u64, size as u64);
+        g.clear_uav(4, [0; 4]);
+        g.encoder().copy_buffer_to_buffer(&source, 0, &readback, 8 + 2 * size as u64, size as u64);
+        let last = [17, 31, 47, 73];
+        g.clear_uav(4, last);
+        g.encoder().copy_buffer_to_buffer(&source, 0, &readback, 8 + 3 * size as u64, size as u64);
+        g.flush();
+        let (tx, rx) = std::sync::mpsc::channel();
+        readback.slice(..).map_async(MapMode::Read, move |result| tx.send(result).unwrap());
+        g.device.poll(PollType::Wait { submission_index: None, timeout: Some(Duration::from_secs(30)) }).unwrap();
+        rx.recv().unwrap().unwrap();
+        let bytes = readback.slice(..).get_mapped_range().unwrap();
+        assert_eq!(&bytes[..8], &[0xa5; 8]);
+        assert_eq!(&bytes[bytes.len() - 8..], &[0xa5; 8]);
+        assert_eq!(&bytes[8..8 + size as usize], initial.as_slice());
+        for (section, pattern) in [(1, first), (2, [0; 4]), (3, last)] {
+            let start = 8 + section * size as usize;
+            for (i, word) in bytes[start..start + size as usize].chunks_exact(4).enumerate() {
+                assert_eq!(word, pattern[i & 3].to_le_bytes());
+            }
+        }
+        drop(bytes);
+        readback.unmap();
+        g.destroy(4);
+        g.destroy(3);
+    }
+    assert_eq!(g.uav_staged_clears, 6);
+    assert_eq!(g.uav_snapshot_bytes_avoided, 2 * (4 + 20 + 4096));
+    assert_eq!(g.uav_snapshot_peak_avoided, 4096);
     assert_eq!(g.errors.load(Ordering::Relaxed), 0);
-    eprintln!("Metal production memory paths: 14 correct draw pixels across 3 slots, cold-tail retirement/reallocation with new cache identity, exact borrowed upload pixels; zero validation errors");
+    eprintln!("Metal production memory paths: 14 correct draw pixels across 3 slots, cold-tail retirement/reallocation with new cache identity, exact borrowed upload pixels; UAV clears 4/20/4096 bytes with two nonzero patterns, zero, ordering and guards; zero validation errors");
 }
