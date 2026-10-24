@@ -39,8 +39,64 @@ final class SelectedFolder: ObservableObject {
 enum LibraryPage:String,CaseIterable {case home="Home",game="GTA V",graphics="Graphics",gameplay="Gameplay",controls="Controls",audio="Audio",advanced="Advanced",files="Game Files",diagnostics="Diagnostics"
     var icon:String{switch self{case .home:return "square.grid.2x2";case .game:return "gamecontroller";case .graphics:return "display";case .gameplay:return "person.fill";case .controls:return "dpad";case .audio:return "speaker.wave.2";case .advanced:return "slider.horizontal.3";case .files:return "folder";case .diagnostics:return "waveform.path.ecg"}}
 }
+
+// Picker's menu presentation does not render its title in a plain VStack.
+// Own the label and both columns here, independent of the control's style.
+private struct LauncherSettingRow<Control:View>:View {
+    let title:String
+    let id:String
+    @ViewBuilder let control:()->Control
+    var body:some View {
+        HStack(alignment:.center,spacing:16) {
+            Text(title).font(.body).foregroundStyle(.primary)
+                .fixedSize(horizontal:false,vertical:true)
+                .frame(maxWidth:.infinity,alignment:.leading)
+                .accessibilityIdentifier("graphics.\(id).label")
+            control().frame(maxWidth:.infinity,alignment:.trailing)
+        }
+        .frame(minHeight:44).padding(.vertical,6)
+        .accessibilityElement(children:.contain)
+    }
+}
+
+private struct LauncherSettingPicker<Value:Hashable>:View {
+    let title:String
+    let id:String
+    @Binding var selection:Value
+    let options:[(Value,String)]
+    var savedTitle:String? = nil
+    private var currentTitle:String {
+        options.first(where:{$0.0==selection})?.1 ?? savedTitle ?? String(describing:selection)
+    }
+    var body:some View {
+        LauncherSettingRow(title:title,id:id) {
+            Menu {
+                Picker(title,selection:$selection) {
+                    // Preserve valid migrated/custom values absent from the quick choices.
+                    if !options.contains(where:{$0.0==selection}) {Text(currentTitle).tag(selection)}
+                    ForEach(options,id:\.0) {Text($0.1).tag($0.0)}
+                }.pickerStyle(.inline)
+            } label: {
+                HStack(spacing:8) {
+                    Text(currentTitle).multilineTextAlignment(.trailing)
+                        .fixedSize(horizontal:false,vertical:true)
+                    Image(systemName:"chevron.up.chevron.down").font(.caption)
+                        .accessibilityHidden(true)
+                }
+                .frame(maxWidth:.infinity,minHeight:44,alignment:.trailing)
+                .padding(.horizontal,12).padding(.vertical,4)
+                .background(Color.white.opacity(0.05),in:RoundedRectangle(cornerRadius:8))
+                .contentShape(Rectangle())
+            }
+            .accessibilityIdentifier("graphics.\(id).control")
+            .accessibilityLabel(title).accessibilityValue(currentTitle)
+        }
+    }
+}
+
 struct LauncherView:View {
     private static let installed = RebirthBuildIdentity(info: Bundle.main.infoDictionary ?? [:])
+    @Environment(\.dynamicTypeSize) private var typeSize
     @AppStorage("rebirth.displayProbe") private var displayProbe=false
     @State private var s=RebirthSettings()
     @State private var page=LibraryPage.home
@@ -57,14 +113,17 @@ struct LauncherView:View {
     var body:some View {
         GeometryReader { geometry in
             VStack(spacing:0) {
-                if geometry.size.width < 660 {ScrollView(.horizontal,showsIndicators:false){HStack{navigation}}.padding(10)}
+                if typeSize.isAccessibilitySize {
+                    Menu {ForEach(LibraryPage.allCases,id:\.self){item in Button(item.rawValue){page=item}}} label:{Label(page.rawValue,systemImage:page.icon).frame(minHeight:44)}
+                        .accessibilityLabel("Launcher section").padding(.horizontal,16)
+                } else if geometry.size.width < 660 {ScrollView(.horizontal,showsIndicators:false){HStack{navigation}}.padding(10)}
                 HStack(spacing:0) {
-                    if geometry.size.width >= 660 {ScrollView {VStack(alignment:.leading,spacing:5){Text("REBIRTH").font(.headline).foregroundStyle(gold).padding(.bottom,14);navigation;Spacer();Text("MUGUET FORK\nGTA V (Test Build)").font(.caption2).foregroundStyle(.secondary)}.padding(16)}.frame(width:172).background(Color.white.opacity(0.03))}
+                    if geometry.size.width >= 660 && !typeSize.isAccessibilitySize {ScrollView {VStack(alignment:.leading,spacing:5){Text("REBIRTH").font(.headline).foregroundStyle(gold).padding(.bottom,14);navigation;Spacer();Text("MUGUET FORK\nGTA V (Test Build)").font(.caption2).foregroundStyle(.secondary)}.padding(16)}.frame(width:172).background(Color.white.opacity(0.03))}
                     ScrollView {VStack(alignment:.leading,spacing:18){
                         VStack(alignment:.leading,spacing:4){Text(page.rawValue).font(.title2.bold());Text(Self.installed.summary).font(.caption.monospaced()).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true).accessibilityIdentifier("rebirth.installedVersion")}
                         if let error {Text(error).foregroundStyle(.red).fixedSize(horizontal:false,vertical:true)}
                         content
-                    }.padding(22).frame(maxWidth:900,alignment:.leading)}
+                    }.padding(22).frame(maxWidth:900,alignment:.leading)}.accessibilityIdentifier("launcher.content")
                 }
                 Divider()
                 HStack(spacing:16){VStack(alignment:.leading){Text(s.mode==1 ? "STORY MODE" : "SANDBOX MODE").font(.caption.bold());Text("\(s.preset) · \(s.resolution) · \(s.fps) FPS cap").font(.caption).foregroundStyle(.secondary)};Spacer();Button(action:start){Label(starting ? "PREPARING" : "PLAY",systemImage:"play.fill").font(.headline).foregroundStyle(.black).padding(.horizontal,35).frame(minHeight:48).background(gold,in:RoundedRectangle(cornerRadius:10))}.buttonStyle(.plain).disabled(!loaded || folder.url==nil || !hasGameCode()).opacity(!loaded || folder.url==nil || !hasGameCode() ? 0.45:1)}.padding(.horizontal,22).padding(.vertical,12)
@@ -87,17 +146,17 @@ struct LauncherView:View {
             if !hasGameCode(){card("Runtime validation build","This build has no embedded game module. PLAY remains unavailable; a compiled launcher is not proof of gameplay.")}
             card("Runtime","Muguet · Wasmtime / Cranelift · Rust wgpu / Metal. Previous native renderers and CPU cores are not linked into this fork.")
         case .graphics:
-            Picker("Preset",selection:Binding(get:{s.preset},set:{s.applyPreset($0)})){ForEach(RebirthSettings.presets,id:\.self){Text($0).tag($0)}}
-            Picker("Base resolution",selection:Binding(get:{"\(s.width)x\(s.height)"},set:{let v=$0.split(separator:"x");s.width=Int(v[0])!;s.height=Int(v[1])!;s.preset="Custom"})){ForEach(["640x360","854x480","960x540","1280x720"],id:\.self){Text($0).tag($0)}}
-            choice("Render scale",\RebirthSettings.scale,[(50,"50%"),(70,"70%"),(100,"100%")])
+            LauncherSettingPicker(title:"Graphics Preset",id:"preset",selection:Binding(get:{s.preset},set:{s.applyPreset($0)}),options:RebirthSettings.presets.map{($0,$0)})
+            LauncherSettingPicker(title:"Resolution",id:"resolution",selection:Binding(get:{"\(s.width)x\(s.height)"},set:{let v=$0.split(separator:"x");s.width=Int(v[0])!;s.height=Int(v[1])!;s.preset="Custom"}),options:["640x360","854x480","960x540","1280x720"].map{($0,$0.replacingOccurrences(of:"x",with:" × "))},savedTitle:"\(s.width) × \(s.height)")
+            choice("Resolution Scale","scale",\RebirthSettings.scale,[(50,"50%"),(70,"70%"),(100,"100%")],savedTitle:"\(s.scale)%")
             Text("Internal rendering: \(s.resolution). Display and touch coordinates remain independent.").font(.caption).foregroundStyle(.secondary)
-            choice("Frame cap",\RebirthSettings.fps,[(15,"15 FPS"),(20,"20 FPS"),(30,"30 FPS"),(60,"60 FPS")])
-            choice("Textures",\RebirthSettings.texture,[(0,"Normal"),(1,"High"),(2,"Very High")])
-            Toggle("FXAA",isOn:edit(\RebirthSettings.fxaa))
-            choice("Shadows",\RebirthSettings.shadow,[(-1,"Off"),(0,"Normal"),(1,"High"),(2,"Very High")])
-            quality("Reflections",\RebirthSettings.reflection,3);quality("Water",\RebirthSettings.water,1);quality("Particles",\RebirthSettings.particles,2);quality("Grass",\RebirthSettings.grass,3);quality("Post processing",\RebirthSettings.postfx,3);quality("Ambient occlusion",\RebirthSettings.ssao,2)
-            choice("Anisotropic filtering",\RebirthSettings.anisotropy,[(0,"Off"),(2,"2×"),(4,"4×"),(8,"8×"),(16,"16×")])
-            Toggle("Frame statistics",isOn:$s.show_fps)
+            choice("Frame Rate Limit","fps",\RebirthSettings.fps,[(15,"15 FPS"),(20,"20 FPS"),(30,"30 FPS"),(60,"60 FPS")])
+            choice("Texture Quality","texture",\RebirthSettings.texture,[(0,"Normal"),(1,"High"),(2,"Very High")])
+            settingToggle("FXAA","fxaa",edit(\RebirthSettings.fxaa))
+            choice("Shadow Quality","shadow",\RebirthSettings.shadow,[(-1,"Off"),(0,"Normal"),(1,"High"),(2,"Very High")])
+            quality("Reflection Quality","reflection",\RebirthSettings.reflection,3);quality("Water Quality","water",\RebirthSettings.water,1);quality("Particle Quality","particles",\RebirthSettings.particles,2);quality("Grass Quality","grass",\RebirthSettings.grass,3);quality("Post Processing","postfx",\RebirthSettings.postfx,3);quality("Ambient Occlusion","ssao",\RebirthSettings.ssao,2)
+            choice("Anisotropic Filtering","anisotropy",\RebirthSettings.anisotropy,[(0,"Off"),(2,"2×"),(4,"4×"),(8,"8×"),(16,"16×")])
+            settingToggle("Frame Statistics","statistics",$s.show_fps)
             card("Unavailable pending validation","MSAA, frame rates above 60 or uncapped rendering, native-display resolution and dynamic upscaling are not enabled. All graphics changes apply at the next clean launch.")
         case .gameplay:slider("Ambient population",edit(\RebirthSettings.density),0...1);card("Separate progression","Story and Sandbox receive separate byte-verified Rebirth save copies. Legacy saves remain untouched for rollback. No save payload conversion is performed.")
         case .controls:slider("Touch look sensitivity",$s.touch_sensitivity,0.25...2);slider("Controller look sensitivity",$s.controller_sensitivity,0.25...2);card("Muguet controls","Native GameController and touch input remain upstream-owned. Additional deadzone, layout, invert-axis and switching preferences need integration testing before being exposed.")
@@ -110,8 +169,17 @@ struct LauncherView:View {
     private var folderCard:some View{VStack(alignment:.leading,spacing:8){Text("GAME FILES").font(.caption.bold()).foregroundStyle(gold);Text(folder.url?.lastPathComponent ?? "No folder selected").font(.headline);if let e=folder.error{Text(e).foregroundStyle(.red)};Text("Permission restored does not imply all assets are present.").font(.caption).foregroundStyle(.secondary);Button("Select / Change Folder"){picker=true}.buttonStyle(.bordered)}.frame(maxWidth:.infinity,alignment:.leading).padding(16).background(Color.white.opacity(0.04),in:RoundedRectangle(cornerRadius:12))}
     private func card(_ title:String,_ text:String)->some View{VStack(alignment:.leading,spacing:7){Text(title).font(.headline);Text(text).font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true)}.frame(maxWidth:.infinity,alignment:.leading).padding(16).background(Color.white.opacity(0.04),in:RoundedRectangle(cornerRadius:12))}
     private func edit<T>(_ key:WritableKeyPath<RebirthSettings,T>)->Binding<T>{Binding(get:{s[keyPath:key]},set:{s[keyPath:key]=$0;s.preset="Custom"})}
-    private func choice(_ title:String,_ key:WritableKeyPath<RebirthSettings,Int>,_ values:[(Int,String)])->some View{Picker(title,selection:edit(key)){ForEach(values,id:\.0){Text($0.1).tag($0.0)}}}
-    private func quality(_ title:String,_ key:WritableKeyPath<RebirthSettings,Int>,_ maximum:Int)->some View{choice(title,key,(0...maximum).map{($0,["Normal","High","Very High","Ultra"][$0])})}
+    private func choice(_ title:String,_ id:String,_ key:WritableKeyPath<RebirthSettings,Int>,_ values:[(Int,String)],savedTitle:String?=nil)->some View{LauncherSettingPicker(title:title,id:id,selection:edit(key),options:values,savedTitle:savedTitle)}
+    private func quality(_ title:String,_ id:String,_ key:WritableKeyPath<RebirthSettings,Int>,_ maximum:Int)->some View{choice(title,id,key,(0...maximum).map{($0,["Normal","High","Very High","Ultra"][$0])})}
+    private func settingToggle(_ title:String,_ id:String,_ value:Binding<Bool>)->some View {
+        LauncherSettingRow(title:title,id:id) {
+            HStack(spacing:8) {
+                Text(value.wrappedValue ? "On":"Off").fixedSize(horizontal:false,vertical:true)
+                Toggle(title,isOn:value).labelsHidden().fixedSize()
+                    .accessibilityLabel(title).accessibilityIdentifier("graphics.\(id).control")
+            }
+        }
+    }
     private func slider(_ title:String,_ value:Binding<Double>,_ range:ClosedRange<Double>)->some View{VStack(alignment:.leading){HStack{Text(title);Spacer();Text(String(format:"%.2f",value.wrappedValue)).monospacedDigit()};Slider(value:value,in:range)}}
     private func shareLogs(){
         guard !exporting else{return};exporting=true

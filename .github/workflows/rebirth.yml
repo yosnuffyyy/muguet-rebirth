@@ -35,6 +35,8 @@ jobs:
           cargo +1.98.1 test --locked --release --bin muguet -- --nocapture 2>&1 | tee evidence/local/upstream-tests.log
       - name: Actual Swift launcher simulator previews
         run: python3 tools/preview-ios.py
+      - name: Graphics labels, scrolling, Dynamic Type and interaction tests
+        run: python3 tools/test-launcher-ui.py
       - name: Original module and actual Muguet host initialization
         run: |
           set -o pipefail
