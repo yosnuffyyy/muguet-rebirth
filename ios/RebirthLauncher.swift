@@ -54,7 +54,7 @@ private struct LauncherSettingRow<Control:View>:View {
                 .accessibilityIdentifier("graphics.\(id).label")
             control().frame(maxWidth:.infinity,alignment:.trailing)
         }
-        .frame(minHeight:44).padding(.vertical,6)
+        .frame(minHeight:44).padding(.vertical,4)
         .accessibilityElement(children:.contain)
     }
 }

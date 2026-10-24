@@ -28,7 +28,7 @@ final class LauncherGraphicsUITests:XCTestCase {
         for _ in 0..<15 {
             if label.exists && control(id).exists {
                 let visible=scroll.frame
-                if visible.insetBy(dx:-1,dy:-1).contains(label.frame) && visible.insetBy(dx:-1,dy:-1).contains(control(id).frame) && label.isHittable && control(id).isHittable {return}
+                if visible.contains(label.frame) && visible.contains(control(id).frame) && label.isHittable && control(id).isHittable {return}
             }
             // Use fixed short scroll gestures: XCTest's synthesized velocity can
             // otherwise fling past rows on the compact SE accessibility layout.
