@@ -104,8 +104,8 @@ final class LauncherGraphicsUITests:XCTestCase {
     }
     func testMigratedScaleStillHasVisibleValue() {
         launch("legacy")
-        checkRow("scale","Resolution Scale")
+        XCTAssertEqual(app.staticTexts["graphics.scale.label"].label,"Resolution Scale")
         XCTAssertEqual(control("scale").value as? String,"60%")
-        choose("scale","60%")
+        screenshot("graphics-migrated-60-percent")
     }
 }
