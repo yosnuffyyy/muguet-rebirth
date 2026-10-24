@@ -25,16 +25,18 @@ final class LauncherGraphicsUITests:XCTestCase {
     }
     private func reveal(_ id:String) {
         let label=app.staticTexts["graphics.\(id).label"]
-        for _ in 0..<35 {
+        for _ in 0..<15 {
             if label.exists && control(id).exists && label.isHittable && control(id).isHittable {
                 let visible=scroll.frame
                 if visible.insetBy(dx:-1,dy:-1).contains(label.frame) && visible.insetBy(dx:-1,dy:-1).contains(control(id).frame) {return}
             }
-            // Center the actual row, including tall/wrapped accessibility text.
+            // Use fixed short scroll gestures: XCTest's synthesized velocity can
+            // otherwise fling past rows on the compact SE accessibility layout.
             let bounds=label.frame.union(control(id).frame)
-            let shift=bounds.isEmpty ? 0.25 : max(-0.55,min(0.55,(bounds.midY-scroll.frame.midY)/scroll.frame.height))
-            let start=scroll.coordinate(withNormalizedOffset:CGVector(dx:0.5,dy:0.5+shift/2))
-            let end=scroll.coordinate(withNormalizedOffset:CGVector(dx:0.5,dy:0.5-shift/2))
+            let viewport=scroll.frame
+            let delta:CGFloat = bounds.isEmpty || bounds.maxY>viewport.maxY ? 0.16 : -0.16
+            let start=scroll.coordinate(withNormalizedOffset:CGVector(dx:0.5,dy:0.5+delta))
+            let end=scroll.coordinate(withNormalizedOffset:CGVector(dx:0.5,dy:0.5-delta))
             start.press(forDuration:0.05,thenDragTo:end)
         }
         XCTFail("Could not fully expose setting \(id): \(label.frame), \(control(id).frame), viewport \(scroll.frame)")
