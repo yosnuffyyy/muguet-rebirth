@@ -158,6 +158,7 @@ struct LauncherView:View {
             choice("Anisotropic Filtering","anisotropy",\RebirthSettings.anisotropy,[(0,"Off"),(2,"2×"),(4,"4×"),(8,"8×"),(16,"16×")])
             settingToggle("Frame Statistics","statistics",$s.show_fps)
             card("Unavailable pending validation","MSAA, frame rates above 60 or uncapped rendering, native-display resolution and dynamic upscaling are not enabled. All graphics changes apply at the next clean launch.")
+            Color.clear.frame(height:64).accessibilityHidden(true)
         case .gameplay:slider("Ambient population",edit(\RebirthSettings.density),0...1);card("Separate progression","Story and Sandbox receive separate byte-verified Rebirth save copies. Legacy saves remain untouched for rollback. No save payload conversion is performed.")
         case .controls:slider("Touch look sensitivity",$s.touch_sensitivity,0.25...2);slider("Controller look sensitivity",$s.controller_sensitivity,0.25...2);card("Muguet controls","Native GameController and touch input remain upstream-owned. Additional deadzone, layout, invert-axis and switching preferences need integration testing before being exposed.")
         case .audio:slider("Master volume",$s.volume,0...1);Toggle("Mute",isOn:$s.mute);card("Native audio","Gain is applied to actual 48 kHz stereo PCM at the CoreAudio output. Muting still drains the ring. Dialogue/radio/effects bus controls are unavailable. Speaker playback requires device verification.")
@@ -214,3 +215,4 @@ private struct LogShare:UIViewControllerRepresentable {
     func makeUIViewController(context:Context)->UIActivityViewController {UIActivityViewController(activityItems:[url],applicationActivities:nil)}
     func updateUIViewController(_ controller:UIActivityViewController,context:Context){}
 }
+
