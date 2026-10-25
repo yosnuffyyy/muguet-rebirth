@@ -25,7 +25,7 @@ final class LauncherGraphicsUITests:XCTestCase {
     }
     private func reveal(_ id:String) {
         let label=app.staticTexts["graphics.\(id).label"]
-        for _ in 0..<30 {
+        for _ in 0..<40 {
             if label.exists && control(id).exists {
                 let visible=scroll.frame
                 if visible.contains(label.frame) && visible.contains(control(id).frame) {return}
