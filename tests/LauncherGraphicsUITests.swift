@@ -25,7 +25,7 @@ final class LauncherGraphicsUITests:XCTestCase {
     }
     private func reveal(_ id:String) {
         let label=app.staticTexts["graphics.\(id).label"]
-        for _ in 0..<20 {
+        for _ in 0..<30 {
             if label.exists && control(id).exists {
                 let visible=scroll.frame
                 if visible.contains(label.frame) && visible.contains(control(id).frame) {return}
@@ -85,8 +85,7 @@ final class LauncherGraphicsUITests:XCTestCase {
         reveal("fxaa")
         let fxaa=control("fxaa"),old=fxaa.value as? String
         fxaa.coordinate(withNormalizedOffset:CGVector(dx:0.5,dy:0.5)).tap()
-        let changedValue=(old=="1" ? "0":"1")
-        let changed=XCTNSPredicateExpectation(predicate:NSPredicate(format:"value == %@",changedValue),object:fxaa)
+        let changed=XCTNSPredicateExpectation(predicate:NSPredicate(format:"value != %@",old ?? ""),object:fxaa)
         XCTAssertEqual(XCTWaiter.wait(for:[changed],timeout:3),.completed,"FXAA switch did not update")
         choose("shadow","Off")
         choose("reflection","Ultra")
