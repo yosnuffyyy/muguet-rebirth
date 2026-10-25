@@ -1,0 +1,49 @@
+name: Package native IPA without tests
+on:
+  push:
+    branches: [native-ios-prototype]
+    paths: ['.github/workflows/package-ipa-no-tests.yml']
+  workflow_dispatch:
+    branches: [native-ios-prototype]
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Pin compiler
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal
+          rustup target add aarch64-apple-ios --toolchain 1.98.1
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/release
+          key: rebirth-integration-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: rebirth-upstream-v1-${{ runner.os }}-${{ runner.arch }}-
+      - name: Prepare pinned engine and AOT host
+        run: |
+          mkdir -p evidence/local
+          node tools/original-engine.mjs evidence/local/original.wasm
+          cargo +1.98.1 build --locked --release --bin muguet
+      - name: Build and package unsigned ARM64 IPA (tests intentionally skipped)
+        env:
+          MUGUET_GAME_CODE: ${{ github.workspace }}/evidence/local/original-ios.cwasm
+          IPHONEOS_DEPLOYMENT_TARGET: '15.0'
+        run: |
+          set -o pipefail
+          python3 tools/run-bounded.py 600 target/release/muguet --precompile-ios evidence/local/original.wasm evidence/local/original-ios.cwasm 2>&1 | tee evidence/local/ios-aot.log
+          cargo +1.98.1 build --locked --release --no-default-features --target aarch64-apple-ios --bin muguet 2>&1 | tee evidence/local/ios-aot-link.log
+          python3 tools/package-ios.py target/aarch64-apple-ios/release/muguet
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: success()
+        with:
+          name: rebirth-private-ipa
+          path: |
+            build/rebirth-private.ipa.enc*
+            evidence/local/package.json
+          retention-days: 14
