@@ -1,3 +1,4 @@
+# Rebuild with the launcher UI overhaul (60ef807)
 name: Package native IPA without tests
 on:
   push:
