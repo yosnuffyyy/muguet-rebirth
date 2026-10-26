@@ -318,7 +318,7 @@ struct LauncherView:View {
     init(initialPage:LibraryPage = .home,play:@escaping()->Void){_page=State(initialValue:initialPage);self.play=play}
     private var accent:Color {Theme.accent(s.mode)}
     private var canPlay:Bool {loaded && folder.url != nil && hasGameCode()}
-    private var isStage:Bool {page==.home || page==.game}
+    private var isStage:Bool {page == .home || page == .game}
     var body:some View {
         GeometryReader { geometry in
             ZStack {
