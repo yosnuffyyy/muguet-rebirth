@@ -3944,14 +3944,18 @@ impl Gpu {
                 frames as f64 / dt, crate::footprint_mb(), crate::RT.get().map(|r| r.mem.data_size() >> 20).unwrap_or(0), crate::gpu_allocated_mb(), crate::compressed_mb(), frames, self.clears_folded, (self.draws - self.fps_d0) / frames.max(1), self.pending_skips - self.pending_skips0, (self.submits - self.submits0) as f64 / frames.max(1) as f64,
                 (self.passes - self.passes0) as f64 / frames.max(1) as f64, self.skipped, self.pipe_creates, self.bind_groups.len(), self.errors.load(Ordering::Relaxed)
             ));
-            if *MEM_STATS {
+            // Per-format census of live block-compressed textures. Cheap (one pass over the live
+            // map per ten-second heartbeat), so it is always logged: it shows how much of the
+            // texture payload is expanded on the CPU instead of staying compressed.
+            {
                 let mut by: Vec<(TextureFormat, u64, u64, u64)> = Vec::new();
                 for (f, p, e) in self.bc_live.values() {
                     match by.iter_mut().find(|x| x.0 == *f) { Some(x) => { x.1 += 1; x.2 += p; x.3 += e; } None => by.push((*f, 1, *p, *e)) }
                 }
                 by.sort_by_key(|x| std::cmp::Reverse(x.2));
                 let parts: Vec<String> = by.iter().map(|(f, n, p, e)| format!("{f:?} {n} tex {} MB{}", p >> 20, if *e > 0 { format!(" (expanded {} MB)", e >> 20) } else { String::new() })).collect();
-                log(&format!("bc textures: {}", parts.join(", ")));
+                let (packed, expanded): (u64, u64) = by.iter().fold((0, 0), |a, x| (a.0 + x.2, a.1 + x.3));
+                log(&format!("bc textures: {} | total source-compressed {} MB, stored expanded {} MB (logical texels; not driver residency, do not add to Metal/process counters)", parts.join(", "), packed >> 20, expanded >> 20));
             }
             let report = if *MEM_STATS { self.instance.generate_report() } else { None };
             if let Some(r) = report {
@@ -4005,8 +4009,21 @@ impl Gpu {
             .map(|p| p.variants.borrow().len()).sum::<usize>();
         let zero_src = self.zero_src.as_ref().map(Buffer::size).unwrap_or(0);
         let scratch = self.scratch.as_ref().map(Buffer::size).unwrap_or(0);
+        // Translated WGSL source retained by every loaded program (kept for variant generation).
+        let mut seen_programs = std::collections::HashSet::new();
+        let (mut shader_programs, mut shader_text) = (0u64, 0u64);
+        let mut tally = |p: &Rc<Program>| {
+            if seen_programs.insert(p.uid) { shader_programs += 1; shader_text += p.text.len() as u64; }
+        };
+        for object in self.objs.iter().flatten() {
+            if let Obj::Shader(s) = object.as_ref() {
+                if let Some(Some(p)) = &s.program { tally(p); }
+            }
+        }
+        for p in self.warm_programs.values().flatten() { tally(p); }
+        for p in self.map_programs.values() { tally(p); }
         let census_us = census_start.elapsed().as_micros();
-        log(&format!("GPU cache ownership: render pipeline entries {}, pending {}, compute entries {}, bind groups {}, layouts {}, warm programs {warm_programs}, map programs {map_programs}, shader variant entries {shader_variants}; zero-fill source {zero_src}, bit-copy scratch {scratch} logical bytes; census wall {census_us} us (excludes formatting/log I/O, no GPU wait)",
+        log(&format!("GPU cache ownership: render pipeline entries {}, pending {}, compute entries {}, bind groups {}, layouts {}, warm programs {warm_programs}, map programs {map_programs}, shader variant entries {shader_variants}; {shader_programs} loaded shader programs retain {shader_text} bytes of WGSL text (host RAM, excludes wgpu/Metal compiled state); zero-fill source {zero_src}, bit-copy scratch {scratch} logical bytes; census wall {census_us} us (excludes formatting/log I/O, no GPU wait)",
             self.pipelines.len(), self.pipe_pending.len(), self.compute.len(), self.bind_groups.len(), self.bgl_cache.len()));
         log(&format!("UAV direct staging: {} nonzero buffer clears, {} cumulative host snapshot bytes avoided, {} max single snapshot bytes avoided; still performs the required GPU upload; not retained RAM",
             self.uav_staged_clears, self.uav_snapshot_bytes_avoided, self.uav_snapshot_peak_avoided));

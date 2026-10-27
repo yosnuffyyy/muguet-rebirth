@@ -1,4 +1,4 @@
-# Rebuild with the full launcher UI rework (0.46.8, compile fix)
+# Rebuild with GPU memory census logging (0.46.9)
 name: Package native IPA without tests
 on:
   push:
