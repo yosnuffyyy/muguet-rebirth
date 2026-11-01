@@ -17,6 +17,7 @@ mod memory_budget;
 mod gpu_memory;
 mod gpu_lifetime;
 mod gpu_timing;
+mod gpu_timer;
 mod pipeline_recipes;
 #[cfg(feature = "jit")]
 mod input_check;

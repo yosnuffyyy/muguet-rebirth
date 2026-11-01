@@ -1,4 +1,4 @@
-# Rebuild with GPU memory census logging (0.46.9)
+# Rebuild with Phase 0 measurement logging (0.46.10)
 name: Package native IPA without tests
 on:
   push:

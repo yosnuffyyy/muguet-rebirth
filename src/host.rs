@@ -110,6 +110,33 @@ pub fn mailbox_await(mem: &SharedMemory, pthread_ptr: u64) {
     write_u32(mem, pthread_ptr + 204, 1);
 }
 
+/// Largest per-import call deltas since `prev`, as (import index, calls).
+fn top_deltas(now: &[u64], prev: &[u64], n: usize) -> Vec<(usize, u64)> {
+    let mut d: Vec<(usize, u64)> = now.iter().enumerate()
+        .map(|(i, &c)| (i, c.saturating_sub(prev.get(i).copied().unwrap_or(0))))
+        .filter(|&(_, c)| c > 0).collect();
+    d.sort_unstable_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    d.truncate(n);
+    d
+}
+
+/// Ten-second heartbeat line: the most frequent engine->host import calls in
+/// the window. Reads the existing per-import counters; adds no per-call work.
+pub fn import_call_report(window_secs: f64, presents: u64) -> String {
+    static PREV: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+    let Some(rt) = RT.get() else { return "host import calls: runtime not ready".into() };
+    let now: Vec<u64> = rt.counts.iter().map(|c| c.load(Ordering::Relaxed)).collect();
+    let mut prev = PREV.lock().unwrap();
+    let total: u64 = now.iter().zip(prev.iter().chain(std::iter::repeat(&0))).map(|(a, b)| a.saturating_sub(*b)).sum();
+    let secs = window_secs.max(1e-3);
+    let parts: Vec<String> = top_deltas(&now, &prev, 20).iter()
+        .map(|&(i, c)| format!("{} {:.0}/s ({:.1}/PRESENT)", rt.imports[i].name, c as f64 / secs, c as f64 / presents.max(1) as f64))
+        .collect();
+    *prev = now;
+    format!("host import calls: {:.0}/s total over {:.1} s; top: {}. Counts only calls through the generic import dispatcher; per-call cost is not measured.",
+        total as f64 / secs, window_secs, if parts.is_empty() { "none".into() } else { parts.join(", ") })
+}
+
 pub fn call(mut caller: Caller<'_, HostState>, idx: usize, params: &[Val], results: &mut [Val]) -> Result<()> {
     let rt = RT.get().expect("runtime");
     let n = rt.counts[idx].fetch_add(1, Ordering::Relaxed) + 1;
@@ -425,4 +452,17 @@ fn mktime_utc(mem: &SharedMemory, tm: u64) -> i64 {
     let y = 1900 + year + mon.div_euclid(12);
     let m = mon.rem_euclid(12) + 1;
     days_from_civil(y, m, 1) * 86400 + (mday - 1) * 86400 + hour * 3600 + min * 60 + sec
+}
+
+#[cfg(test)]
+mod import_report_tests {
+    use super::top_deltas;
+    #[test]
+    fn top_deltas_orders_by_window_calls_and_skips_idle_imports() {
+        let prev = [10, 0, 5];
+        let now = [15, 40, 5, 7];
+        assert_eq!(top_deltas(&now, &prev, 20), vec![(1, 40), (3, 7), (0, 5)]);
+        assert_eq!(top_deltas(&now, &prev, 1), vec![(1, 40)]);
+        assert_eq!(top_deltas(&[3], &[9], 5), vec![]);
+    }
 }

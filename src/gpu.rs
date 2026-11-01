@@ -100,6 +100,8 @@ static BC1_ASTC: AtomicBool = AtomicBool::new(false);
 static F32_HALF: AtomicBool = AtomicBool::new(false);
 static CLOUD_SHADOWS: LazyLock<bool> = LazyLock::new(|| std::env::var("MUGUET_CLOUD_SHADOWS").map_or(true, |v| v != "0"));
 static MEM_STATS: LazyLock<bool> = LazyLock::new(|| std::env::var("MUGUET_MEM_STATS").is_ok_and(|v| v != "0"));
+// Render-pass GPU timestamps (two samples per pass) are on by default; MUGUET_GPU_TIMING=0 disables them.
+static GPU_TIMING: LazyLock<bool> = LazyLock::new(|| std::env::var("MUGUET_GPU_TIMING").map_or(true, |v| v != "0"));
 static RE_VAR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"@binding\((\d+)u?\)\s*var(?:<[^>]*>)?\s+(\w+)").unwrap());
 static RE_IDENT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\w+").unwrap());
 
@@ -912,6 +914,10 @@ pub struct Gpu {
     counter_slot: u32,
     frame_slot_done: Vec<Option<SubmissionIndex>>,
     timing: FrameTelemetry,
+    gpu_timer: Option<crate::gpu_timer::GpuTimer>,
+    // Uniform packs staged since the last heartbeat (count, bytes).
+    pack_count: u64,
+    pack_bytes: u64,
     slot_waits: u64,
     ring_peak_bytes: u64,
     ring_size: u64,
@@ -969,7 +975,8 @@ impl Gpu {
             | Features::FLOAT32_FILTERABLE | Features::INDIRECT_FIRST_INSTANCE | Features::RG11B10UFLOAT_RENDERABLE
             | Features::BGRA8UNORM_STORAGE | Features::DEPTH_CLIP_CONTROL | Features::CLIP_DISTANCES | Features::DUAL_SOURCE_BLENDING
 
-            | Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES | Features::TEXTURE_COMPRESSION_ASTC;
+            | Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES | Features::TEXTURE_COMPRESSION_ASTC
+            | if *GPU_TIMING { Features::TIMESTAMP_QUERY } else { Features::empty() };
         let features = want & adapter.features();
         if !features.contains(Features::FLOAT32_FILTERABLE) {
             F32_HALF.store(true, Ordering::Relaxed);
@@ -1011,6 +1018,12 @@ impl Gpu {
         }
         let info = adapter.get_info();
         log(&format!("device ready: {} ({:?}), features {:?}", info.name, info.backend, features));
+        let gpu_timer = crate::gpu_timer::GpuTimer::new(&device, &queue, FRAME_SLOTS);
+        log(match (*GPU_TIMING, gpu_timer.is_some()) {
+            (false, _) => "GPU pass timestamps: disabled by MUGUET_GPU_TIMING=0",
+            (true, false) => "GPU pass timestamps: unavailable on this device (no TIMESTAMP_QUERY or zero period)",
+            (true, true) => "GPU pass timestamps: enabled (begin/end sample per render pass; diagnostic overhead not measured)",
+        });
         let surface_format = surface
             .as_ref()
             .map(|(s, _)| {
@@ -1055,7 +1068,7 @@ impl Gpu {
             occlusion_set: None, occlusion_next: 0, occlusion_active: None, occlusion_pass_slot: None,
             pending_resolve: Vec::new(), pending_events: Vec::new(), pending_maps: Vec::new(), counter_src: None, counter_slot: 0,
             frame_slot_done: (0..FRAME_SLOTS).map(|_| None).collect(), last_submit: None, vb_avail: [0; 16],
-            timing: FrameTelemetry::new(), slot_waits: 0, ring_peak_bytes: 0, ring_size: size,
+            timing: FrameTelemetry::new(), gpu_timer, pack_count: 0, pack_bytes: 0, slot_waits: 0, ring_peak_bytes: 0, ring_size: size,
             dbg_idx: if dbg != 0 { dbg + 424 } else { 0 },
             draws: 0, skipped: 0, presents: 0, pipe_creates: 0, fps_t0: Instant::now(), fps_n0: 0, fps_d0: 0, errors, inflight: Arc::new(AtomicU64::new(0)), submits: 0, submits0: 0, passes: 0, passes0: 0,
         })
@@ -2107,8 +2120,10 @@ impl Gpu {
             stencil_ops: if has_stencil(*f) && !ro_s { Some(Operations { load: ds_clear.and_then(|c| c.stencil).map(LoadOp::Clear).unwrap_or(LoadOp::Load), store: StoreOp::Store }) } else { None },
         });
         let occ = self.occlusion_set.clone();
+        let ts = self.gpu_timer.as_mut().and_then(|t| t.next_pass());
         let pass = self.encoder().begin_render_pass(&RenderPassDescriptor {
-            label: None, color_attachments: &color_atts, depth_stencil_attachment: dsa, timestamp_writes: None,
+            label: None, color_attachments: &color_atts, depth_stencil_attachment: dsa,
+            timestamp_writes: ts.as_ref().map(|(set, i)| RenderPassTimestampWrites { query_set: set, beginning_of_pass_write_index: Some(*i), end_of_pass_write_index: Some(*i + 1) }),
             occlusion_query_set: occ.as_ref(), multiview_mask: None,
         }).forget_lifetime();
         self.pass = Some(pass);
@@ -2453,6 +2468,8 @@ impl Gpu {
             return None;
         }
         let (ci, off) = self.uniform_alloc(pack.size);
+        self.pack_count += 1;
+        self.pack_bytes += pack.size;
         let mut stage_buf = std::mem::take(&mut self.ubo_staging[ci]);
         let block = stage_buf.prepare(off as usize, pack.size as usize, RING_CHUNK as usize, self.presents);
         for m in &pack.members {
@@ -3808,6 +3825,18 @@ impl Gpu {
         self.use_buf(res);
     }
 
+    // Final submit of a PRESENT: resolve this frame's pass timestamps into the
+    // slot readback buffer in the same submission, then start its async map.
+    fn frame_flush(&mut self) {
+        self.end_pass();
+        if let Some(mut t) = self.gpu_timer.take() {
+            if t.has_samples() { t.end_frame(self.encoder()); }
+            self.gpu_timer = Some(t);
+        }
+        self.flush();
+        if let Some(t) = self.gpu_timer.as_mut() { t.after_submit(); }
+    }
+
     fn present(&mut self, id: u32) {
         let command_started = Instant::now();
         if crate::startup::PRESENT_REQUESTS.fetch_add(1, Ordering::Relaxed) == 0 { crate::rebirth::logs::checkpoint("first PRESENT command received (not display completion)", false); }
@@ -3878,7 +3907,7 @@ impl Gpu {
                     }
                 }
                 let after = if probe {crate::gpu_probe::encode(&dev,self.encoder(),&frame.texture)} else {None};
-                self.flush();
+                self.frame_flush();
                 if probe {crate::gpu_probe::finish(before,0,self.presents);crate::gpu_probe::finish(after,1,self.presents);}
                 crate::startup::GPU_PHASE.store(5, Ordering::Relaxed);
                 let presented = Instant::now();
@@ -3889,13 +3918,14 @@ impl Gpu {
             } else {
                 self.timing.record(Timing::Acquire, acquired.elapsed());
                 crate::startup::GPU_PHASE.store(1, Ordering::Relaxed);
-                self.flush();
+                self.frame_flush();
             }
         } else {
-            self.flush();
+            self.frame_flush();
         }
         self.collect_pipelines();
         self.presents += 1;
+        if let Some(t) = self.gpu_timer.as_mut() { t.begin_frame(self.presents as usize); }
         self.pipe_wait_left = PIPELINE_WAIT;
         PRESENTS.store(self.presents, Ordering::Relaxed);
         self.frame_slot_done[self.ubo_slot] = self.last_submit.clone();
@@ -3957,6 +3987,12 @@ impl Gpu {
                 let (packed, expanded): (u64, u64) = by.iter().fold((0, 0), |a, x| (a.0 + x.2, a.1 + x.3));
                 log(&format!("bc textures: {} | total source-compressed {} MB, stored expanded {} MB (logical texels; not driver residency, do not add to Metal/process counters)", parts.join(", "), packed >> 20, expanded >> 20));
             }
+            if let Some(t) = self.gpu_timer.as_mut() { log(&t.report()); }
+            log(&format!("uniform packs: {:.0}/PRESENT, {:.1} KB/PRESENT staged for upload (each uniform bind group build repacks the shader's full constant pack; identical repeats are not detected here)",
+                self.pack_count as f64 / frames.max(1) as f64, self.pack_bytes as f64 / frames.max(1) as f64 / 1024.0));
+            self.pack_count = 0;
+            self.pack_bytes = 0;
+            log(&crate::host::import_call_report(dt, frames));
             let report = if *MEM_STATS { self.instance.generate_report() } else { None };
             if let Some(r) = report {
                 let h = &r.hub;
